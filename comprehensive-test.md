@@ -6,7 +6,7 @@ status: draft
 excerpt: Testing all markdown features including new enhancements
 taxonomies:
   faqtype: Test
-featured_image: blablabla.jpg
+featured_image: dummy-image.jpg
 ---
 
 This document tests all supported markdown features including the newly added ones.
