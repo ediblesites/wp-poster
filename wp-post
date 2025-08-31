@@ -2,8 +2,9 @@
 # WordPress Poster - System-wide command wrapper
 # This script can be symlinked to /usr/local/bin for global access
 
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Get the directory where the actual script is located (resolve symlinks)
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 # Execute the Python script with all arguments
 exec python3 "$SCRIPT_DIR/wp-post.py" "$@"

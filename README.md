@@ -63,3 +63,15 @@ date: 2025-01-01T10:00:00
 - **Code blocks**: ``` with syntax highlighting
 - **Tables**: `| header | header |`
 - **Shortcodes**: `[gallery]` - passed through to WordPress
+
+## Test
+
+```bash
+# Test all features (before install.sh)
+./wp-post comprehensive-test.md
+
+# After install.sh, can use globally:
+wp-post comprehensive-test.md
+
+# Check WordPress admin to verify Gutenberg blocks render correctly
+```

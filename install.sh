@@ -6,7 +6,7 @@ echo "Installing WordPress Poster..."
 
 # Install Python dependencies
 echo "Installing Python dependencies..."
-pip3 install -r requirements.txt
+sudo apt update && sudo apt install -y python3-requests python3-yaml python3-markdown2
 
 # Create symlink for system-wide access
 echo "Creating system-wide command..."
