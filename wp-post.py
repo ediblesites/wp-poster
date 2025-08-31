@@ -105,20 +105,33 @@ class WordPressPost:
                 i += 1
                 continue
             
-            # Handle lists
-            if line.startswith('- ') or line.startswith('* ') or line.startswith('1. '):
+            # Handle lists (including nested)
+            if self.is_list_item(line):
                 if not in_list:
                     in_list = True
-                    list_items = []
-                list_items.append(line[2:].strip())
+                    # Collect all consecutive list items
+                    list_lines = []
                 
-                # Check if next line is not a list item
-                if i + 1 >= len(lines) or (not lines[i + 1].startswith('- ') and not lines[i + 1].startswith('* ') and not lines[i + 1].startswith('1. ')):
-                    # End list
-                    list_html = '<ul>\n' + ''.join([f'<li>{item}</li>\n' for item in list_items]) + '</ul>'
+                # Collect this list item
+                list_lines.append(line)
+                
+                # Look ahead to collect all consecutive list items
+                j = i + 1
+                while j < len(lines) and (self.is_list_item(lines[j]) or lines[j].strip() == ''):
+                    if lines[j].strip():  # Skip empty lines but don't break the list
+                        list_lines.append(lines[j])
+                    j += 1
+                
+                # Process the collected list
+                list_html, is_ordered = self.process_nested_list(list_lines)
+                
+                if is_ordered:
+                    blocks.append(f'<!-- wp:list {{"ordered":true}} -->\n{list_html}\n<!-- /wp:list -->')
+                else:
                     blocks.append(f'<!-- wp:list -->\n{list_html}\n<!-- /wp:list -->')
-                    in_list = False
-                    list_items = []
+                
+                in_list = False
+                i = j - 1  # Skip the processed lines
                 i += 1
                 continue
             
@@ -139,11 +152,28 @@ class WordPressPost:
                 i = j
                 continue
             
-            # Handle blockquotes
+            # Handle blockquotes (including multi-line)
             if line.startswith('>'):
-                quote_text = line[1:].strip()
-                blocks.append(f'<!-- wp:quote -->\n<blockquote class="wp-block-quote"><p>{quote_text}</p></blockquote>\n<!-- /wp:quote -->')
-                i += 1
+                quote_lines = []
+                
+                # Collect all consecutive blockquote lines
+                while i < len(lines) and lines[i].startswith('>'):
+                    quote_content = lines[i][1:].strip()  # Remove '>' and strip
+                    if quote_content:  # Only add non-empty lines
+                        quote_lines.append(quote_content)
+                    elif quote_lines:  # Add empty line if we have content (for paragraph breaks)
+                        quote_lines.append('')
+                    i += 1
+                
+                # Process the collected blockquote
+                if quote_lines:
+                    # Remove trailing empty lines
+                    while quote_lines and not quote_lines[-1]:
+                        quote_lines.pop()
+                    
+                    # Convert to paragraphs (split by empty lines)
+                    quote_html = self.process_blockquote_content(quote_lines)
+                    blocks.append(f'<!-- wp:quote -->\n<blockquote class="wp-block-quote">{quote_html}</blockquote>\n<!-- /wp:quote -->')
                 continue
             
             # Handle empty lines (paragraph breaks)
@@ -170,6 +200,116 @@ class WordPressPost:
                 blocks.extend(processed_blocks)
         
         return '\n\n'.join(blocks)
+    
+    def is_list_item(self, line):
+        """Check if line is a list item (ordered or unordered)"""
+        import re
+        # Unordered: -, *, +
+        # Ordered: 1., 2., 10., 1)
+        return re.match(r'^(\s*)([*\-+]|\d+[.)]) ', line) is not None
+    
+    def get_list_type(self, line):
+        """Determine if list item is ordered or unordered"""
+        import re
+        if re.match(r'^(\s*)\d+[.)] ', line):
+            return 'ordered'
+        return 'unordered'
+    
+    def extract_list_item_content(self, line):
+        """Extract the content of a list item, removing the marker"""
+        import re
+        # Match the list marker and extract content
+        match = re.match(r'^(\s*)([*\-+]|\d+[.)]) (.*)$', line)
+        if match:
+            return match.group(3)  # The content after the marker
+        return line.strip()
+    
+    def get_indentation_level(self, line):
+        """Get the indentation level of a line (number of leading spaces)"""
+        return len(line) - len(line.lstrip())
+    
+    def process_nested_list(self, list_lines):
+        """Process a list with potential nesting into HTML"""
+        if not list_lines:
+            return "", False
+            
+        # Build nested structure
+        result_html = []
+        stack = []  # Stack of (tag, level) tuples
+        root_is_ordered = self.get_list_type(list_lines[0]) == 'ordered'
+        
+        for line in list_lines:
+            indent_level = self.get_indentation_level(line)
+            content = self.extract_list_item_content(line)
+            is_ordered = self.get_list_type(line) == 'ordered'
+            
+            # Determine target depth (every 2 spaces = 1 level)
+            target_depth = indent_level // 2
+            current_depth = len(stack)
+            
+            # Close deeper levels
+            while current_depth > target_depth:
+                tag, _ = stack.pop()
+                result_html.append(f'</{tag}>')
+                current_depth -= 1
+            
+            # Open new levels if needed
+            while current_depth < target_depth:
+                if current_depth == 0:
+                    # Use the type of the first item for root level
+                    tag = 'ol' if root_is_ordered else 'ul'
+                else:
+                    # For nested levels, use the type of this item
+                    tag = 'ol' if is_ordered else 'ul'
+                result_html.append(f'<{tag}>')
+                stack.append((tag, current_depth))
+                current_depth += 1
+            
+            # Ensure we have a list container at current level
+            if not stack:
+                tag = 'ol' if root_is_ordered else 'ul'
+                result_html.append(f'<{tag}>')
+                stack.append((tag, 0))
+            
+            # Process inline markdown in the content
+            processed_content = self.process_inline_markdown_no_images(content)
+            result_html.append(f'<li>{processed_content}</li>')
+        
+        # Close all remaining levels
+        while stack:
+            tag, _ = stack.pop()
+            result_html.append(f'</{tag}>')
+        
+        return '\n'.join(result_html), root_is_ordered
+    
+    def process_blockquote_content(self, quote_lines):
+        """Process blockquote content, handling multiple paragraphs"""
+        if not quote_lines:
+            return ""
+        
+        # Split into paragraphs by empty lines
+        paragraphs = []
+        current_paragraph = []
+        
+        for line in quote_lines:
+            if line == '':
+                if current_paragraph:
+                    paragraphs.append(' '.join(current_paragraph))
+                    current_paragraph = []
+            else:
+                current_paragraph.append(line)
+        
+        # Add the last paragraph if any
+        if current_paragraph:
+            paragraphs.append(' '.join(current_paragraph))
+        
+        # Process each paragraph for inline markdown
+        processed_paragraphs = []
+        for paragraph in paragraphs:
+            processed = self.process_inline_markdown_no_images(paragraph)
+            processed_paragraphs.append(f'<p>{processed}</p>')
+        
+        return ''.join(processed_paragraphs)
     
     def process_paragraph_with_images(self, text):
         """Process a paragraph that may contain images, splitting into separate blocks"""
@@ -230,8 +370,11 @@ class WordPressPost:
         return self.uploaded_media.get(url, None)
     
     def process_inline_markdown_no_images(self, text):
-        """Process inline markdown like bold, italic, and links (but not images)"""
+        """Process inline markdown like bold, italic, strikethrough, and links (but not images)"""
         import re
+        
+        # Strikethrough (must come before other formatting to avoid conflicts)
+        text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
         
         # Bold
         text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
@@ -245,11 +388,14 @@ class WordPressPost:
         return text
     
     def process_inline_markdown(self, text):
-        """Process inline markdown like bold, italic, links, and images"""
+        """Process inline markdown like bold, italic, strikethrough, links, and images"""
         import re
         
         # Process images first (before links)
         text = self.process_inline_images(text)
+        
+        # Strikethrough (must come before other formatting to avoid conflicts)
+        text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
         
         # Bold
         text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
