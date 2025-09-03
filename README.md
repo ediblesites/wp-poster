@@ -33,6 +33,13 @@ Three ways to configure:
 2. **Environment variables**: `WP_SITE_URL`, `WP_USERNAME`, `WP_APP_PASSWORD`
 3. **Command line**: `--site-url`, `--username`, `--app-password`
 
+### Credential Validation
+Running `wp-post my-file.md` without credentials will show helpful error messages:
+- Lists exactly which credentials are missing
+- Suggests `wp-post --init` for interactive setup
+- Shows all configuration options with examples
+- Useful for troubleshooting and automated workflows
+
 ## Frontmatter
 
 ```yaml
@@ -96,3 +103,4 @@ wp-post comprehensive-test.md
 - **Fixed list generation**: Lists now properly group all items in a single block instead of creating separate blocks per item
 - **Fixed content ordering**: Paragraphs now appear in correct order relative to lists and headings
 - **Added test mode**: Use `--test` flag to preview Gutenberg blocks without posting to WordPress
+- **Credential validation**: Clear error messages and setup guidance when credentials are missing
