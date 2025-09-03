@@ -46,18 +46,8 @@ class WordPressPost:
             frontmatter = {}
             markdown_content = content
             
-        # Check if we should use Gutenberg blocks (default: yes)
-        use_gutenberg = frontmatter.get('gutenberg', True)
-        
-        if use_gutenberg:
-            # Convert markdown to Gutenberg blocks
-            blocks_content = self.markdown_to_gutenberg_blocks(markdown_content)
-        else:
-            # Convert markdown to classic HTML
-            blocks_content = markdown2.markdown(
-                markdown_content,
-                extras=['fenced-code-blocks', 'tables', 'break-on-newline']
-            )
+        # Convert markdown to Gutenberg blocks
+        blocks_content = self.markdown_to_gutenberg_blocks(markdown_content)
         
         return frontmatter, blocks_content
     
@@ -179,7 +169,7 @@ class WordPressPost:
             # Handle empty lines (paragraph breaks)
             if not line.strip():
                 if current_block:
-                    paragraph_text = ' '.join(current_block)
+                    paragraph_text = '\n'.join(current_block)
                     if paragraph_text:
                         # Check for standalone images in the paragraph
                         processed_blocks = self.process_paragraph_with_images(paragraph_text)
@@ -194,7 +184,7 @@ class WordPressPost:
         
         # Handle any remaining paragraph
         if current_block and not in_code_block:
-            paragraph_text = ' '.join(current_block)
+            paragraph_text = '\n'.join(current_block)
             if paragraph_text:
                 processed_blocks = self.process_paragraph_with_images(paragraph_text)
                 blocks.extend(processed_blocks)
@@ -465,6 +455,10 @@ class WordPressPost:
     def process_inline_markdown_no_images(self, text):
         """Process inline markdown like bold, italic, strikethrough, and links (but not images)"""
         import re
+        
+        # Convert line breaks to <br> tags (but not double line breaks which separate paragraphs)
+        # This handles the case where single line breaks should be preserved within a paragraph
+        text = re.sub(r'(?<!\n)\n(?!\n)', '<br>', text)
         
         # Strikethrough (must come before other formatting to avoid conflicts)
         text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
