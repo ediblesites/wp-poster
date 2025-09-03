@@ -89,6 +89,14 @@ class WordPressPost:
             
             # Handle headings
             if line.startswith('#'):
+                # Process any accumulated paragraph content first
+                if current_block:
+                    paragraph_text = '\n'.join(current_block)
+                    if paragraph_text:
+                        processed_blocks = self.process_paragraph_with_images(paragraph_text)
+                        blocks.extend(processed_blocks)
+                    current_block = []
+                
                 level = len(line.split(' ')[0])
                 heading_text = line[level:].strip()
                 blocks.append(f'<!-- wp:heading {{"level":{level}}} -->\n<h{level} class="wp-block-heading">{heading_text}</h{level}>\n<!-- /wp:heading -->')
@@ -97,6 +105,14 @@ class WordPressPost:
             
             # Handle lists (including nested)
             if self.is_list_item(line):
+                # Process any accumulated paragraph content first
+                if current_block:
+                    paragraph_text = '\n'.join(current_block)
+                    if paragraph_text:
+                        processed_blocks = self.process_paragraph_with_images(paragraph_text)
+                        blocks.extend(processed_blocks)
+                    current_block = []
+                
                 # Collect all consecutive list items starting from current line
                 list_lines = []
                 j = i
