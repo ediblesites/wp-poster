@@ -97,16 +97,11 @@ class WordPressPost:
             
             # Handle lists (including nested)
             if self.is_list_item(line):
-                if not in_list:
-                    in_list = True
-                    # Collect all consecutive list items
-                    list_lines = []
+                # Collect all consecutive list items starting from current line
+                list_lines = []
+                j = i
                 
-                # Collect this list item
-                list_lines.append(line)
-                
-                # Look ahead to collect all consecutive list items
-                j = i + 1
+                # Collect all consecutive list items
                 while j < len(lines) and (self.is_list_item(lines[j]) or lines[j].strip() == ''):
                     if lines[j].strip():  # Skip empty lines but don't break the list
                         list_lines.append(lines[j])
@@ -120,9 +115,7 @@ class WordPressPost:
                 else:
                     blocks.append(f'<!-- wp:list -->\n{list_html}\n<!-- /wp:list -->')
                 
-                in_list = False
-                i = j - 1  # Skip the processed lines
-                i += 1
+                i = j  # Skip the processed lines
                 continue
             
             # Handle tables (basic support)
@@ -223,10 +216,25 @@ class WordPressPost:
         if not list_lines:
             return "", False
             
-        # Build nested structure
         result_html = []
-        stack = []  # Stack of (tag, level) tuples
         root_is_ordered = self.get_list_type(list_lines[0]) == 'ordered'
+        
+        # For simple flat lists (most common case), use simple logic
+        if all(self.get_indentation_level(line) == 0 for line in list_lines):
+            # All items at same level - create single list
+            tag = 'ol' if root_is_ordered else 'ul'
+            result_html.append(f'<{tag}>')
+            
+            for line in list_lines:
+                content = self.extract_list_item_content(line)
+                processed_content = self.process_inline_markdown_no_images(content)
+                result_html.append(f'<li>{processed_content}</li>')
+            
+            result_html.append(f'</{tag}>')
+            return '\n'.join(result_html), root_is_ordered
+        
+        # Handle nested lists with stack-based approach
+        stack = []  # Stack of (tag, level) tuples
         
         for line in list_lines:
             indent_level = self.get_indentation_level(line)
@@ -1016,6 +1024,7 @@ def main():
     parser.add_argument('--draft', action='store_true', help='Post as draft')
     parser.add_argument('--config', help='Path to config file')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
+    parser.add_argument('--test', action='store_true', help='Test mode: convert markdown to Gutenberg blocks without posting')
     
     args = parser.parse_args()
     
@@ -1023,7 +1032,33 @@ def main():
     if args.init:
         sys.exit(0 if init_config() else 1)
     
-    # If no file provided and not init, show help
+    # Handle --test flag (test mode doesn't need WordPress credentials)
+    if args.test:
+        if not args.file:
+            parser.print_help()
+            sys.exit(1)
+        
+        if not os.path.exists(args.file):
+            print(f"Error: File '{args.file}' not found")
+            sys.exit(1)
+        
+        # Create a dummy poster instance just for parsing
+        poster = WordPressPost('https://example.com', 'user', 'pass')
+        
+        print(f"Converting {args.file} to Gutenberg blocks...")
+        frontmatter, content = poster.parse_markdown_file(args.file)
+        
+        print("Frontmatter:")
+        print("=" * 40)
+        import yaml
+        print(yaml.dump(frontmatter, default_flow_style=False))
+        
+        print("Generated Gutenberg blocks:")
+        print("=" * 40)
+        print(content)
+        sys.exit(0)
+    
+    # If no file provided and not init/test, show help
     if not args.file:
         parser.print_help()
         sys.exit(1)
