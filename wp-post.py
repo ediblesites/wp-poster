@@ -805,10 +805,14 @@ def load_config():
     """Load configuration from various sources"""
     config = {}
     
-    # Check for config file in home directory
+    # Get the directory where this script is located
+    script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    
+    # Check for config file in various locations
     config_paths = [
         Path.home() / '.wp-poster.json',
         Path.home() / '.config/wp-poster/config.json',
+        script_dir / '.wp-poster.json',  # Check in script's directory
         Path.cwd() / '.wp-poster.json'
     ]
     
