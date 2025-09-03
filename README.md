@@ -21,6 +21,9 @@ wp-post my-post.md
 
 # Post as draft
 wp-post my-post.md --draft
+
+# Test mode - convert to Gutenberg blocks without posting
+wp-post my-post.md --test
 ```
 
 ## Configuration
@@ -64,8 +67,20 @@ date: 2025-01-01T10:00:00
 - **Tables**: `| header | header |`
 - **Shortcodes**: `[gallery]` - passed through to WordPress
 
-## Test
+## Testing & Development
 
+### Test Mode
+Debug markdown-to-Gutenberg conversion without WordPress credentials:
+
+```bash
+# Test conversion without posting
+wp-post my-file.md --test
+
+# Shows frontmatter and generated Gutenberg blocks
+# Useful for debugging formatting issues
+```
+
+### Full Integration Test
 ```bash
 # Test all features (before install.sh)
 ./wp-post comprehensive-test.md
@@ -75,3 +90,9 @@ wp-post comprehensive-test.md
 
 # Check WordPress admin to verify Gutenberg blocks render correctly
 ```
+
+## Recent Improvements
+
+- **Fixed list generation**: Lists now properly group all items in a single block instead of creating separate blocks per item
+- **Fixed content ordering**: Paragraphs now appear in correct order relative to lists and headings
+- **Added test mode**: Use `--test` flag to preview Gutenberg blocks without posting to WordPress
