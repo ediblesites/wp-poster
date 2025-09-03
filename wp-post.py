@@ -311,17 +311,106 @@ class WordPressPost:
         
         return ''.join(processed_paragraphs)
     
+    def process_html_images(self, text):
+        """Process HTML figure/img tags and convert to Gutenberg blocks"""
+        import re
+        
+        # Pattern for HTML figure with img and figcaption
+        figure_pattern = r'<figure[^>]*>\s*<img\s+([^>]+)\s*/?\>\s*(?:<figcaption[^>]*>(.*?)</figcaption>)?\s*</figure>'
+        
+        def replace_figure(match):
+            img_attrs = match.group(1)
+            caption = match.group(2) if match.group(2) else ""
+            
+            # Extract src and alt from img attributes
+            src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', img_attrs)
+            alt_match = re.search(r'alt\s*=\s*["\']([^"\']*)["\']', img_attrs)
+            
+            if not src_match:
+                return match.group(0)  # Return original if no src
+            
+            image_url = src_match.group(1)
+            alt_text = alt_match.group(1) if alt_match else ""
+            
+            # Process the image URL (download and upload to WordPress)
+            final_url = self.process_image_url(image_url)
+            
+            if final_url:
+                media_id = self.get_media_id_from_url(final_url)
+                
+                if caption and caption.strip():
+                    # Clean HTML tags from caption
+                    caption_clean = re.sub(r'<[^>]+>', '', caption).strip()
+                    if media_id:
+                        return f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/><figcaption class="wp-element-caption">{caption_clean}</figcaption></figure>\n<!-- /wp:image -->'
+                    else:
+                        return f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/><figcaption class="wp-element-caption">{caption_clean}</figcaption></figure>\n<!-- /wp:image -->'
+                else:
+                    # Image without caption
+                    if media_id:
+                        return f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/></figure>\n<!-- /wp:image -->'
+                    else:
+                        return f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/></figure>\n<!-- /wp:image -->'
+            else:
+                return match.group(0)  # Return original if processing failed
+        
+        # Replace figure tags first
+        text = re.sub(figure_pattern, replace_figure, text, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Also handle standalone img tags (not wrapped in figure)
+        # Use a simpler approach - find all img tags and filter out those in figure tags
+        standalone_img_pattern = r'<img\s+([^>]+)\s*/?\>'
+        
+        def replace_standalone_img(match):
+            # Skip if this img tag is already processed (would be inside a wp:image block)
+            if '<!-- wp:image' in match.group(0):
+                return match.group(0)
+            
+            img_attrs = match.group(1)
+            
+            # Extract src and alt from img attributes
+            src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', img_attrs)
+            alt_match = re.search(r'alt\s*=\s*["\']([^"\']*)["\']', img_attrs)
+            
+            if not src_match:
+                return match.group(0)  # Return original if no src
+            
+            image_url = src_match.group(1)
+            alt_text = alt_match.group(1) if alt_match else ""
+            
+            # Process the image URL
+            final_url = self.process_image_url(image_url)
+            
+            if final_url:
+                media_id = self.get_media_id_from_url(final_url)
+                
+                if media_id:
+                    return f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/></figure>\n<!-- /wp:image -->'
+                else:
+                    return f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/></figure>\n<!-- /wp:image -->'
+            else:
+                return match.group(0)  # Return original if processing failed
+        
+        # Only process standalone img tags (those not already converted)
+        if '<!-- wp:image' not in text:
+            text = re.sub(standalone_img_pattern, replace_standalone_img, text, flags=re.IGNORECASE)
+        
+        return text
+    
     def process_paragraph_with_images(self, text):
         """Process a paragraph that may contain images, splitting into separate blocks"""
         import re
         
         blocks = []
         
+        # First, handle HTML figure/img tags
+        processed_text = self.process_html_images(text)
+        
         # Pattern for markdown images: ![alt text](url "optional title")
         image_pattern = r'!\[([^\]]*)\]\(([^)]+?)(?:\s+"([^"]*)")?\)'
         
         # Split text by images
-        parts = re.split(image_pattern, text)
+        parts = re.split(image_pattern, processed_text)
         
         i = 0
         while i < len(parts):
@@ -329,9 +418,13 @@ class WordPressPost:
             if i % 4 == 0:  # Text parts are at positions 0, 4, 8, etc.
                 text_part = parts[i].strip()
                 if text_part:
-                    # Process other inline markdown
-                    text_part = self.process_inline_markdown_no_images(text_part)
-                    blocks.append(f'<!-- wp:paragraph -->\n<p>{text_part}</p>\n<!-- /wp:paragraph -->')
+                    # Check if this is already a processed image block
+                    if text_part.startswith('<!-- wp:image'):
+                        blocks.append(text_part)
+                    else:
+                        # Process other inline markdown
+                        text_part = self.process_inline_markdown_no_images(text_part)
+                        blocks.append(f'<!-- wp:paragraph -->\n<p>{text_part}</p>\n<!-- /wp:paragraph -->')
             
             # Image parts (alt, url, title) - positions 1,2,3 then 5,6,7, etc.
             elif i % 4 == 1 and i + 2 < len(parts):
