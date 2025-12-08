@@ -96,8 +96,9 @@ class WordPressPost:
                         processed_blocks = self.process_paragraph_with_images(paragraph_text)
                         blocks.extend(processed_blocks)
                     current_block = []
-                
-                level = len(line.split(' ')[0])
+
+                # Count the number of # symbols for heading level
+                level = len(line) - len(line.lstrip('#'))
                 heading_text = line[level:].strip()
                 blocks.append(f'<!-- wp:heading {{"level":{level}}} -->\n<h{level} class="wp-block-heading">{heading_text}</h{level}>\n<!-- /wp:heading -->')
                 i += 1
@@ -556,14 +557,14 @@ class WordPressPost:
             if media_id:
                 # Get the WordPress media URL
                 try:
-                    media_response = requests.get(f"{self.api_url}/media/{media_id}", auth=self.auth)
+                    media_response = requests.get(f"{self.api_url}/media/{media_id}", auth=self.auth, timeout=30)
                     if media_response.status_code == 200:
                         media_url = media_response.json()['source_url']
                         self.uploaded_media[media_url] = media_id  # Track the media ID
                         print(f"✓ Downloaded and uploaded remote image: {image_path_or_url} → {media_url}")
                         return media_url
-                except:
-                    pass
+                except (requests.RequestException, KeyError, ValueError) as e:
+                    print(f"⚠ Error getting media URL: {e}")
             
             # If upload failed, fall back to original URL
             print(f"⚠ Failed to upload remote image, using original URL: {image_path_or_url}")
@@ -577,14 +578,14 @@ class WordPressPost:
                 if media_id:
                     # Get the WordPress media URL
                     try:
-                        media_response = requests.get(f"{self.api_url}/media/{media_id}", auth=self.auth)
+                        media_response = requests.get(f"{self.api_url}/media/{media_id}", auth=self.auth, timeout=30)
                         if media_response.status_code == 200:
                             media_url = media_response.json()['source_url']
                             self.uploaded_media[media_url] = media_id  # Track the media ID
                             print(f"✓ Uploaded inline image: {image_path_or_url} → {media_url}")
                             return media_url
-                    except:
-                        pass
+                    except (requests.RequestException, KeyError, ValueError) as e:
+                        print(f"⚠ Error getting media URL: {e}")
                 
                 print(f"✗ Failed to upload inline image: {image_path_or_url}")
                 return None
@@ -624,14 +625,14 @@ class WordPressPost:
     
     def get_categories(self):
         """Get all categories from WordPress"""
-        response = requests.get(f"{self.api_url}/categories", auth=self.auth)
+        response = requests.get(f"{self.api_url}/categories", auth=self.auth, timeout=30)
         if response.status_code == 200:
             return {cat['name']: cat['id'] for cat in response.json()}
         return {}
     
     def get_tags(self):
         """Get all tags from WordPress"""
-        response = requests.get(f"{self.api_url}/tags", auth=self.auth)
+        response = requests.get(f"{self.api_url}/tags", auth=self.auth, timeout=30)
         if response.status_code == 200:
             return {tag['name']: tag['id'] for tag in response.json()}
         return {}
@@ -639,7 +640,7 @@ class WordPressPost:
     def create_category(self, name):
         """Create a new category"""
         data = {'name': name}
-        response = requests.post(f"{self.api_url}/categories", auth=self.auth, json=data)
+        response = requests.post(f"{self.api_url}/categories", auth=self.auth, json=data, timeout=30)
         if response.status_code == 201:
             return response.json()['id']
         return None
@@ -647,14 +648,14 @@ class WordPressPost:
     def create_tag(self, name):
         """Create a new tag"""
         data = {'name': name}
-        response = requests.post(f"{self.api_url}/tags", auth=self.auth, json=data)
+        response = requests.post(f"{self.api_url}/tags", auth=self.auth, json=data, timeout=30)
         if response.status_code == 201:
             return response.json()['id']
         return None
     
     def get_taxonomy_terms(self, taxonomy):
         """Get all terms for a custom taxonomy"""
-        response = requests.get(f"{self.api_url}/{taxonomy}", auth=self.auth)
+        response = requests.get(f"{self.api_url}/{taxonomy}", auth=self.auth, timeout=30)
         if response.status_code == 200:
             return {term['name']: term['id'] for term in response.json()}
         return {}
@@ -662,7 +663,7 @@ class WordPressPost:
     def create_taxonomy_term(self, taxonomy, name):
         """Create a new term in a custom taxonomy"""
         data = {'name': name}
-        response = requests.post(f"{self.api_url}/{taxonomy}", auth=self.auth, json=data)
+        response = requests.post(f"{self.api_url}/{taxonomy}", auth=self.auth, json=data, timeout=30)
         if response.status_code == 201:
             return response.json()['id']
         return None
@@ -772,14 +773,16 @@ class WordPressPost:
             response = requests.post(
                 f"{self.api_url}/{api_endpoint}/{frontmatter['id']}",
                 auth=self.auth,
-                json=post_data
+                json=post_data,
+                timeout=30
             )
         else:
             # Create new post
             response = requests.post(
                 f"{self.api_url}/{api_endpoint}",
                 auth=self.auth,
-                json=post_data
+                json=post_data,
+                timeout=30
             )
         
         if response.status_code in [200, 201]:
@@ -847,12 +850,13 @@ class WordPressPost:
         }
         
         print(f"Uploading featured image: {filename}")
-        
+
         upload_response = requests.post(
             f"{self.api_url}/media",
             auth=self.auth,
             headers=headers,
-            data=media_data
+            data=media_data,
+            timeout=60
         )
         
         if upload_response.status_code == 201:
@@ -895,12 +899,13 @@ class WordPressPost:
         }
         
         print(f"Uploading featured image: {filename}")
-        
+
         response = requests.post(
             f"{self.api_url}/media",
             auth=self.auth,
             headers=headers,
-            data=media_data
+            data=media_data,
+            timeout=60
         )
         
         if response.status_code == 201:
