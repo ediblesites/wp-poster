@@ -1121,14 +1121,8 @@ def init_config():
         print("Username is required.")
     
     # Get application password
-    print("\nTo generate an Application Password:")
-    print("1. Go to WordPress Admin → Users → Your Profile")
-    print("2. Scroll to 'Application Passwords' section")
-    print("3. Enter a name (e.g., 'wp-poster') and click 'Add New Application Password'")
-    print("4. Copy the generated password (format: xxxx xxxx xxxx xxxx xxxx xxxx)\n")
-    
     while True:
-        app_password = getpass.getpass("WordPress Application Password: ").strip()
+        app_password = getpass.getpass("Application Password: ").strip()
         if app_password:
             # Remove spaces from the password if they were included
             app_password = app_password.replace(' ', '')
@@ -1174,7 +1168,7 @@ def init_config():
         json.dump(config, f, indent=2)
     
     print(f"\n✓ Configuration saved to: {config_path}")
-    print("\nYou can now use: wp-post <markdown-file>")
+    print("\nYou can now use: wp-post <file>")
     return True
 
 
