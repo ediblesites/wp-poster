@@ -121,7 +121,7 @@ wp-post my-file.md --test --markdown
 
 ## Recent Improvements
 
-- **Raw posting by default**: Content posted as-is; use `--markdown` for conversion
+- **Raw posting by default**: Content posted as-is; use `--markdown` for conversion to Gutenberg
 - **Smart config discovery**: Walks up directory tree to find project configs; local overrides global
 - **Author context**: Set default author in config; override per-post with `author` frontmatter
 - **Page templates**: Use `template` frontmatter for page template selection
