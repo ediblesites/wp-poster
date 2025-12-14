@@ -1234,16 +1234,21 @@ def main():
         print("\nConfig files (in precedence order):")
         config_paths = get_config_paths()
         active_found = False
+        active_config = None
         for name, path, exists in config_paths:
             if exists and not active_found:
                 print(f"  ✓ {name}: {path} (active)")
                 active_found = True
+                with open(path, 'r') as f:
+                    active_config = json.load(f)
             elif exists:
                 print(f"    {name}: {path}")
             else:
                 print(f"    {name}: {path} (not found)")
         if not active_found:
             print("  No config file found. Run 'wp-post --init' to create one.")
+        elif active_config and active_config.get('author_context'):
+            print(f"\nDefault author: {active_config['author_context']}")
         sys.exit(1)
     
     # Load configuration
