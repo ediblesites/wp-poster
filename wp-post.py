@@ -975,6 +975,34 @@ def find_local_config():
     return None
 
 
+def get_config_paths():
+    """Get all config paths in precedence order with their status."""
+    script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    local_config = find_local_config()
+
+    paths = []
+    seen = set()
+
+    if local_config:
+        paths.append(('Local project', local_config, True))
+        seen.add(local_config.resolve())
+
+    candidates = [
+        ('User global', Path.home() / '.wp-poster.json'),
+        ('XDG config', Path.home() / '.config/wp-poster/config.json'),
+        ('App default', script_dir / '.wp-poster.json'),
+    ]
+
+    for name, path in candidates:
+        resolved = path.resolve() if path.exists() else path
+        if resolved not in seen:
+            paths.append((name, path, path.exists()))
+            if path.exists():
+                seen.add(resolved)
+
+    return paths
+
+
 def load_config():
     """Load configuration from various sources.
 
@@ -1160,9 +1188,22 @@ def main():
             print(content)
         sys.exit(0)
     
-    # If no file provided and not init/test, show help
+    # If no file provided and not init/test, show help and config info
     if not args.file:
         parser.print_help()
+        print("\nConfig files (in precedence order):")
+        config_paths = get_config_paths()
+        active_found = False
+        for name, path, exists in config_paths:
+            if exists and not active_found:
+                print(f"  ✓ {name}: {path} (active)")
+                active_found = True
+            elif exists:
+                print(f"    {name}: {path}")
+            else:
+                print(f"    {name}: {path} (not found)")
+        if not active_found:
+            print("  No config file found. Run 'wp-post --init' to create one.")
         sys.exit(1)
     
     # Load configuration
