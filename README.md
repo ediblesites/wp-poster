@@ -27,7 +27,9 @@ wp-post my-file.md --markdown
 
 # Test mode - preview without posting
 wp-post my-file.html --test
-wp-post my-file.md --test --markdown
+
+# Verbose mode - debug output
+wp-post my-file.html --verbose
 ```
 
 ## Configuration
@@ -121,5 +123,9 @@ wp-post my-file.md --test --markdown
 
 - **Raw posting by default**: Content posted as-is; use `--markdown` for conversion
 - **Smart config discovery**: Walks up directory tree to find project configs; local overrides global
+- **Author context**: Set default author in config; override per-post with `author` frontmatter
+- **Page templates**: Use `template` frontmatter for page template selection
+- **Hierarchical posts**: Use `parent` frontmatter for parent post ID
+- **Verbose mode**: Use `--verbose` or `-v` for detailed debug output
 - **Taxonomy auto-creation**: Categories, tags, and custom taxonomy terms are created if they don't exist
-- **Test mode**: Use `--test` flag to preview content without posting
+- **Config info on bare run**: Running `wp-post` without arguments shows config file discovery
