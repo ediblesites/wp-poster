@@ -707,8 +707,30 @@ class WordPressPost:
         if response.status_code == 201:
             return response.json()['id']
         return None
-    
-    def post_to_wordpress(self, filepath, draft=False, raw=False):
+
+    def get_user_id(self, username_or_id):
+        """Get user ID from username or return ID if already numeric"""
+        # If it's already a number, return it
+        if isinstance(username_or_id, int):
+            return username_or_id
+        if isinstance(username_or_id, str) and username_or_id.isdigit():
+            return int(username_or_id)
+
+        # Look up by username
+        response = requests.get(
+            f"{self.api_url}/users",
+            auth=self.auth,
+            params={'search': username_or_id},
+            timeout=30
+        )
+        if response.status_code == 200:
+            users = response.json()
+            for user in users:
+                if user.get('slug') == username_or_id or user.get('name') == username_or_id:
+                    return user['id']
+        return None
+
+    def post_to_wordpress(self, filepath, draft=False, raw=False, author_context=None):
         """Post file to WordPress"""
         if raw:
             frontmatter, content = self.parse_raw_file(filepath)
@@ -742,7 +764,16 @@ class WordPressPost:
                 post_data['date'] = frontmatter['date'].isoformat()
             else:
                 post_data['date'] = frontmatter['date']
-        
+
+        # Handle author (frontmatter overrides config)
+        author = frontmatter.get('author', author_context)
+        if author:
+            author_id = self.get_user_id(author)
+            if author_id:
+                post_data['author'] = author_id
+            else:
+                print(f"⚠ Author '{author}' not found, using authenticated user")
+
         # Handle categories (only for posts)
         if 'categories' in frontmatter and api_endpoint == 'posts':
             existing_cats = self.get_categories()
@@ -837,9 +868,17 @@ class WordPressPost:
                 'title': post['title']['rendered']
             }
         else:
+            error_msg = response.text
+            # Check for author permission error
+            try:
+                error_data = response.json()
+                if error_data.get('code') == 'rest_cannot_edit_others':
+                    error_msg = f"Permission denied: cannot set author to another user. {error_data.get('message', '')}"
+            except (ValueError, KeyError):
+                pass
             return {
                 'success': False,
-                'error': response.text,
+                'error': error_msg,
                 'status_code': response.status_code
             }
     
@@ -1108,6 +1147,13 @@ def init_config():
         if response.status_code == 200:
             user_data = response.json()
             print(f"✓ Successfully connected as: {user_data.get('name', config['username'])}")
+
+            # Ask for default author context
+            print("\nDefault author for posts (optional):")
+            print("  Leave blank to use authenticated user, or enter username/ID")
+            author_context = input("Default author: ").strip()
+            if author_context:
+                config['author_context'] = author_context
         elif response.status_code == 401:
             print("✗ Authentication failed. Please check your credentials.")
             retry = input("Would you like to try again? (y/N): ").strip().lower()
@@ -1249,7 +1295,12 @@ def main():
     )
     
     print(f"Posting {args.file} to {config['site_url']}...")
-    result = poster.post_to_wordpress(args.file, draft=args.draft, raw=not args.markdown)
+    result = poster.post_to_wordpress(
+        args.file,
+        draft=args.draft,
+        raw=not args.markdown,
+        author_context=config.get('author_context')
+    )
     
     if result['success']:
         print(f"✓ Successfully posted: {result['title']}")

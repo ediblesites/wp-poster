@@ -61,6 +61,7 @@ title: Post Title
 slug: post-slug
 status: draft|publish
 excerpt: Post excerpt
+author: username|user_id  # overrides config author_context
 post_type: post|page|custom-post-type
 featured_image: image.jpg|https://example.com/image.jpg
 categories: [Cat1, Cat2]  # posts only, auto-created if missing
@@ -74,6 +75,8 @@ acf:
 date: 2025-01-01T10:00:00
 ---
 ```
+
+Config file supports `author_context` for default author (set via `--init`).
 
 ## Markdown Mode
 
