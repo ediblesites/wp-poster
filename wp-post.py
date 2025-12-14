@@ -1113,7 +1113,6 @@ def main():
     parser.add_argument('--username', help='WordPress username')
     parser.add_argument('--app-password', help='WordPress application password')
     parser.add_argument('--draft', action='store_true', help='Post as draft')
-    parser.add_argument('--config', help='Path to config file')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
     parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
     parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks (default: post as-is)')
