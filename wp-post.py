@@ -1106,17 +1106,17 @@ def init_config():
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Post markdown files with frontmatter to WordPress'
+        description='Post files with frontmatter to WordPress'
     )
-    parser.add_argument('file', nargs='?', help='Markdown file to post')
+    parser.add_argument('file', nargs='?', help='File to post')
     parser.add_argument('--site-url', help='WordPress site URL')
     parser.add_argument('--username', help='WordPress username')
     parser.add_argument('--app-password', help='WordPress application password')
     parser.add_argument('--draft', action='store_true', help='Post as draft')
     parser.add_argument('--config', help='Path to config file')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
-    parser.add_argument('--test', action='store_true', help='Test mode: convert markdown to Gutenberg blocks without posting')
-    parser.add_argument('--raw', action='store_true', help='Post content as-is without markdown-to-Gutenberg conversion')
+    parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
+    parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks (default: post as-is)')
     
     args = parser.parse_args()
     
@@ -1137,18 +1137,7 @@ def main():
         # Create a dummy poster instance just for parsing
         poster = WordPressPost('https://example.com', 'user', 'pass')
 
-        if args.raw:
-            print(f"Parsing {args.file} in raw mode (no conversion)...")
-            frontmatter, content = poster.parse_raw_file(args.file)
-
-            print("Frontmatter:")
-            print("=" * 40)
-            print(yaml.dump(frontmatter, default_flow_style=False))
-
-            print("Raw content (no conversion):")
-            print("=" * 40)
-            print(content)
-        else:
+        if args.markdown:
             print(f"Converting {args.file} to Gutenberg blocks...")
             frontmatter, content = poster.parse_markdown_file(args.file)
 
@@ -1157,6 +1146,17 @@ def main():
             print(yaml.dump(frontmatter, default_flow_style=False))
 
             print("Generated Gutenberg blocks:")
+            print("=" * 40)
+            print(content)
+        else:
+            print(f"Parsing {args.file} (no conversion)...")
+            frontmatter, content = poster.parse_raw_file(args.file)
+
+            print("Frontmatter:")
+            print("=" * 40)
+            print(yaml.dump(frontmatter, default_flow_style=False))
+
+            print("Content:")
             print("=" * 40)
             print(content)
         sys.exit(0)
@@ -1209,7 +1209,7 @@ def main():
     )
     
     print(f"Posting {args.file} to {config['site_url']}...")
-    result = poster.post_to_wordpress(args.file, draft=args.draft, raw=args.raw)
+    result = poster.post_to_wordpress(args.file, draft=args.draft, raw=not args.markdown)
     
     if result['success']:
         print(f"✓ Successfully posted: {result['title']}")
