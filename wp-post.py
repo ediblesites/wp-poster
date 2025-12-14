@@ -644,17 +644,35 @@ class WordPressPost:
         return html
     
     def get_categories(self):
-        """Get all categories from WordPress"""
-        response = requests.get(f"{self.api_url}/categories", auth=self.auth, timeout=30)
+        """Get all categories from WordPress, indexed by both name and slug"""
+        response = requests.get(
+            f"{self.api_url}/categories",
+            auth=self.auth,
+            params={'per_page': 100},
+            timeout=30
+        )
         if response.status_code == 200:
-            return {cat['name']: cat['id'] for cat in response.json()}
+            cats = {}
+            for cat in response.json():
+                cats[cat['name']] = cat['id']
+                cats[cat['slug']] = cat['id']
+            return cats
         return {}
-    
+
     def get_tags(self):
-        """Get all tags from WordPress"""
-        response = requests.get(f"{self.api_url}/tags", auth=self.auth, timeout=30)
+        """Get all tags from WordPress, indexed by both name and slug"""
+        response = requests.get(
+            f"{self.api_url}/tags",
+            auth=self.auth,
+            params={'per_page': 100},
+            timeout=30
+        )
         if response.status_code == 200:
-            return {tag['name']: tag['id'] for tag in response.json()}
+            tags = {}
+            for tag in response.json():
+                tags[tag['name']] = tag['id']
+                tags[tag['slug']] = tag['id']
+            return tags
         return {}
     
     def create_category(self, name):
@@ -692,11 +710,20 @@ class WordPressPost:
         return taxonomy
 
     def get_taxonomy_terms(self, taxonomy):
-        """Get all terms for a taxonomy"""
+        """Get all terms for a taxonomy, indexed by both name and slug"""
         rest_base = self.get_taxonomy_rest_base(taxonomy)
-        response = requests.get(f"{self.api_url}/{rest_base}", auth=self.auth, timeout=30)
+        response = requests.get(
+            f"{self.api_url}/{rest_base}",
+            auth=self.auth,
+            params={'per_page': 100},
+            timeout=30
+        )
         if response.status_code == 200:
-            return {term['name']: term['id'] for term in response.json()}
+            terms = {}
+            for term in response.json():
+                terms[term['name']] = term['id']
+                terms[term['slug']] = term['id']
+            return terms
         return {}
 
     def create_taxonomy_term(self, taxonomy, name):
