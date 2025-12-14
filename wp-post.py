@@ -757,12 +757,16 @@ class WordPressPost:
                     return user['id']
         return None
 
-    def post_to_wordpress(self, filepath, draft=False, raw=False, author_context=None):
+    def post_to_wordpress(self, filepath, draft=False, raw=False, author_context=None, verbose=False):
         """Post file to WordPress"""
         if raw:
             frontmatter, content = self.parse_raw_file(filepath)
+            if verbose:
+                print(f"[verbose] Parsed raw file: {filepath}")
         else:
             frontmatter, content = self.parse_markdown_file(filepath)
+            if verbose:
+                print(f"[verbose] Parsed and converted markdown: {filepath}")
         
         # Determine post type and API endpoint
         post_type = frontmatter.get('post_type', 'posts')
@@ -775,7 +779,10 @@ class WordPressPost:
         else:
             # Custom post type - use as-is
             api_endpoint = post_type
-        
+
+        if verbose:
+            print(f"[verbose] Post type: {post_type} → endpoint: {api_endpoint}")
+
         # Prepare post data
         post_data = {
             'title': frontmatter.get('title', Path(filepath).stem),
@@ -791,6 +798,14 @@ class WordPressPost:
                 post_data['date'] = frontmatter['date'].isoformat()
             else:
                 post_data['date'] = frontmatter['date']
+
+        # Handle template (for pages and hierarchical post types)
+        if 'template' in frontmatter:
+            post_data['template'] = frontmatter['template']
+
+        # Handle parent (for hierarchical post types)
+        if 'parent' in frontmatter:
+            post_data['parent'] = frontmatter['parent']
 
         # Handle author (frontmatter overrides config)
         author = frontmatter.get('author', author_context)
@@ -869,22 +884,26 @@ class WordPressPost:
                 post_data['featured_media'] = media_id
         
         # Create or update post
+        if verbose:
+            debug_data = {k: v for k, v in post_data.items() if k != 'content'}
+            debug_data['content'] = f"[{len(post_data.get('content', ''))} chars]"
+            print(f"[verbose] Post data: {json.dumps(debug_data, indent=2, default=str)}")
+
         if 'id' in frontmatter:
             # Update existing post
-            response = requests.post(
-                f"{self.api_url}/{api_endpoint}/{frontmatter['id']}",
-                auth=self.auth,
-                json=post_data,
-                timeout=30
-            )
+            url = f"{self.api_url}/{api_endpoint}/{frontmatter['id']}"
+            if verbose:
+                print(f"[verbose] Updating post: POST {url}")
+            response = requests.post(url, auth=self.auth, json=post_data, timeout=30)
         else:
             # Create new post
-            response = requests.post(
-                f"{self.api_url}/{api_endpoint}",
-                auth=self.auth,
-                json=post_data,
-                timeout=30
-            )
+            url = f"{self.api_url}/{api_endpoint}"
+            if verbose:
+                print(f"[verbose] Creating post: POST {url}")
+            response = requests.post(url, auth=self.auth, json=post_data, timeout=30)
+
+        if verbose:
+            print(f"[verbose] Response: {response.status_code}")
         
         if response.status_code in [200, 201]:
             post = response.json()
@@ -1211,6 +1230,7 @@ def main():
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
     parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
     parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks (default: post as-is)')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Show detailed debug output')
     
     args = parser.parse_args()
     
@@ -1325,7 +1345,8 @@ def main():
         args.file,
         draft=args.draft,
         raw=not args.markdown,
-        author_context=config.get('author_context')
+        author_context=config.get('author_context'),
+        verbose=args.verbose
     )
     
     if result['success']:
