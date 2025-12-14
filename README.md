@@ -22,8 +22,12 @@ wp-post my-post.md
 # Post as draft
 wp-post my-post.md --draft
 
-# Test mode - convert to Gutenberg blocks without posting
+# Post pre-formatted Gutenberg HTML (no conversion)
+wp-post my-file.html --raw
+
+# Test mode - preview without posting
 wp-post my-post.md --test
+wp-post my-file.html --test --raw
 ```
 
 ## Configuration
@@ -33,12 +37,21 @@ Three ways to configure:
 2. **Environment variables**: `WP_SITE_URL`, `WP_USERNAME`, `WP_APP_PASSWORD`
 3. **Command line**: `--site-url`, `--username`, `--app-password`
 
+### Config File Discovery
+
+Config files are searched in this order (first match wins):
+1. **Local/project**: Walks up from current directory to find nearest `.wp-poster.json`
+2. **User global**: `~/.wp-poster.json`
+3. **XDG config**: `~/.config/wp-poster/config.json`
+4. **App default**: Script directory `.wp-poster.json`
+
+This means project-specific configs override global configs, and running from `/project/src/deep/` will find `/project/.wp-poster.json`.
+
 ### Credential Validation
 Running `wp-post my-file.md` without credentials will show helpful error messages:
 - Lists exactly which credentials are missing
 - Suggests `wp-post --init` for interactive setup
 - Shows all configuration options with examples
-- Useful for troubleshooting and automated workflows
 
 ## Frontmatter
 
@@ -50,10 +63,10 @@ status: draft|publish
 excerpt: Post excerpt
 post_type: post|page|custom-post-type
 featured_image: image.jpg|https://example.com/image.jpg
-categories: [Cat1, Cat2]  # posts only
-tags: [tag1, tag2]        # posts only
+categories: [Cat1, Cat2]  # posts only, auto-created if missing
+tags: [tag1, tag2]        # posts only, auto-created if missing
 taxonomies:
-  custom_taxonomy: Term Name
+  custom_taxonomy: Term Name  # any taxonomy, auto-created if missing
 meta:
   custom_field: value
 acf:
@@ -100,7 +113,9 @@ wp-post comprehensive-test.md
 
 ## Recent Improvements
 
-- **Fixed list generation**: Lists now properly group all items in a single block instead of creating separate blocks per item
-- **Fixed content ordering**: Paragraphs now appear in correct order relative to lists and headings
-- **Added test mode**: Use `--test` flag to preview Gutenberg blocks without posting to WordPress
-- **Credential validation**: Clear error messages and setup guidance when credentials are missing
+- **Raw mode**: Use `--raw` flag to post pre-formatted Gutenberg HTML without conversion
+- **Smart config discovery**: Walks up directory tree to find project configs; local overrides global
+- **Taxonomy auto-creation**: Categories, tags, and custom taxonomy terms are created if they don't exist
+- **Fixed list generation**: Lists now properly group all items in a single block
+- **Fixed content ordering**: Paragraphs appear in correct order relative to lists and headings
+- **Test mode**: Use `--test` flag to preview Gutenberg blocks without posting

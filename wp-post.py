@@ -48,9 +48,29 @@ class WordPressPost:
             
         # Convert markdown to Gutenberg blocks
         blocks_content = self.markdown_to_gutenberg_blocks(markdown_content)
-        
+
         return frontmatter, blocks_content
-    
+
+    def parse_raw_file(self, filepath):
+        """Parse file with frontmatter but keep content as-is (no markdown conversion)"""
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Split frontmatter and content
+        if content.startswith('---'):
+            parts = content.split('---', 2)
+            if len(parts) >= 3:
+                frontmatter = yaml.safe_load(parts[1])
+                raw_content = parts[2].strip()
+            else:
+                frontmatter = {}
+                raw_content = content
+        else:
+            frontmatter = {}
+            raw_content = content
+
+        return frontmatter, raw_content
+
     def markdown_to_gutenberg_blocks(self, markdown_content):
         """Convert markdown to Gutenberg block format"""
         blocks = []
@@ -653,24 +673,47 @@ class WordPressPost:
             return response.json()['id']
         return None
     
+    def get_taxonomy_rest_base(self, taxonomy):
+        """Get the REST API base for a taxonomy (may differ from slug)"""
+        if not hasattr(self, '_taxonomy_cache'):
+            self._taxonomy_cache = {}
+        if taxonomy in self._taxonomy_cache:
+            return self._taxonomy_cache[taxonomy]
+
+        # Query WordPress for taxonomy info
+        response = requests.get(f"{self.api_url}/taxonomies/{taxonomy}", auth=self.auth, timeout=30)
+        if response.status_code == 200:
+            rest_base = response.json().get('rest_base', taxonomy)
+            self._taxonomy_cache[taxonomy] = rest_base
+            return rest_base
+
+        # Fallback to slug if taxonomy not found
+        self._taxonomy_cache[taxonomy] = taxonomy
+        return taxonomy
+
     def get_taxonomy_terms(self, taxonomy):
-        """Get all terms for a custom taxonomy"""
-        response = requests.get(f"{self.api_url}/{taxonomy}", auth=self.auth, timeout=30)
+        """Get all terms for a taxonomy"""
+        rest_base = self.get_taxonomy_rest_base(taxonomy)
+        response = requests.get(f"{self.api_url}/{rest_base}", auth=self.auth, timeout=30)
         if response.status_code == 200:
             return {term['name']: term['id'] for term in response.json()}
         return {}
-    
+
     def create_taxonomy_term(self, taxonomy, name):
-        """Create a new term in a custom taxonomy"""
+        """Create a new term in a taxonomy"""
+        rest_base = self.get_taxonomy_rest_base(taxonomy)
         data = {'name': name}
-        response = requests.post(f"{self.api_url}/{taxonomy}", auth=self.auth, json=data, timeout=30)
+        response = requests.post(f"{self.api_url}/{rest_base}", auth=self.auth, json=data, timeout=30)
         if response.status_code == 201:
             return response.json()['id']
         return None
     
-    def post_to_wordpress(self, filepath, draft=False):
-        """Post markdown file to WordPress"""
-        frontmatter, content = self.parse_markdown_file(filepath)
+    def post_to_wordpress(self, filepath, draft=False, raw=False):
+        """Post file to WordPress"""
+        if raw:
+            frontmatter, content = self.parse_raw_file(filepath)
+        else:
+            frontmatter, content = self.parse_markdown_file(filepath)
         
         # Determine post type and API endpoint
         post_type = frontmatter.get('post_type', 'posts')
@@ -917,21 +960,48 @@ class WordPressPost:
             return None
 
 
+def find_local_config():
+    """Walk up directory tree from cwd to find nearest .wp-poster.json"""
+    current = Path.cwd()
+    while current != current.parent:
+        config_path = current / '.wp-poster.json'
+        if config_path.exists():
+            return config_path
+        current = current.parent
+    # Check root directory
+    config_path = current / '.wp-poster.json'
+    if config_path.exists():
+        return config_path
+    return None
+
+
 def load_config():
-    """Load configuration from various sources"""
+    """Load configuration from various sources.
+
+    Precedence (first match wins):
+    1. Local/project config (nearest .wp-poster.json walking up from cwd)
+    2. User global (~/.wp-poster.json)
+    3. XDG config (~/.config/wp-poster/config.json)
+    4. App default (script directory .wp-poster.json)
+    """
     config = {}
-    
+
     # Get the directory where this script is located
     script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
-    
-    # Check for config file in various locations
-    config_paths = [
+
+    # Find local config by walking up directory tree
+    local_config = find_local_config()
+
+    # Check for config file in various locations (highest priority first)
+    config_paths = []
+    if local_config:
+        config_paths.append(local_config)
+    config_paths.extend([
         Path.home() / '.wp-poster.json',
         Path.home() / '.config/wp-poster/config.json',
-        script_dir / '.wp-poster.json',  # Check in script's directory
-        Path.cwd() / '.wp-poster.json'
-    ]
-    
+        script_dir / '.wp-poster.json',  # App default (lowest priority)
+    ])
+
     for config_path in config_paths:
         if config_path.exists():
             with open(config_path, 'r') as f:
@@ -1046,6 +1116,7 @@ def main():
     parser.add_argument('--config', help='Path to config file')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
     parser.add_argument('--test', action='store_true', help='Test mode: convert markdown to Gutenberg blocks without posting')
+    parser.add_argument('--raw', action='store_true', help='Post content as-is without markdown-to-Gutenberg conversion')
     
     args = parser.parse_args()
     
@@ -1058,25 +1129,36 @@ def main():
         if not args.file:
             parser.print_help()
             sys.exit(1)
-        
+
         if not os.path.exists(args.file):
             print(f"Error: File '{args.file}' not found")
             sys.exit(1)
-        
+
         # Create a dummy poster instance just for parsing
         poster = WordPressPost('https://example.com', 'user', 'pass')
-        
-        print(f"Converting {args.file} to Gutenberg blocks...")
-        frontmatter, content = poster.parse_markdown_file(args.file)
-        
-        print("Frontmatter:")
-        print("=" * 40)
-        import yaml
-        print(yaml.dump(frontmatter, default_flow_style=False))
-        
-        print("Generated Gutenberg blocks:")
-        print("=" * 40)
-        print(content)
+
+        if args.raw:
+            print(f"Parsing {args.file} in raw mode (no conversion)...")
+            frontmatter, content = poster.parse_raw_file(args.file)
+
+            print("Frontmatter:")
+            print("=" * 40)
+            print(yaml.dump(frontmatter, default_flow_style=False))
+
+            print("Raw content (no conversion):")
+            print("=" * 40)
+            print(content)
+        else:
+            print(f"Converting {args.file} to Gutenberg blocks...")
+            frontmatter, content = poster.parse_markdown_file(args.file)
+
+            print("Frontmatter:")
+            print("=" * 40)
+            print(yaml.dump(frontmatter, default_flow_style=False))
+
+            print("Generated Gutenberg blocks:")
+            print("=" * 40)
+            print(content)
         sys.exit(0)
     
     # If no file provided and not init/test, show help
@@ -1127,7 +1209,7 @@ def main():
     )
     
     print(f"Posting {args.file} to {config['site_url']}...")
-    result = poster.post_to_wordpress(args.file, draft=args.draft)
+    result = poster.post_to_wordpress(args.file, draft=args.draft, raw=args.raw)
     
     if result['success']:
         print(f"✓ Successfully posted: {result['title']}")
