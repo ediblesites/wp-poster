@@ -699,6 +699,31 @@ def init_config():
             author_context = input("Default author: ").strip()
             if author_context:
                 config['author_context'] = author_context
+
+            # Ask for SSH configuration
+            print("\nConfigure SSH for external tooling? (y/N)")
+            if input().strip().lower() == 'y':
+                ssh_config = {}
+                print("\nSSH Configuration:")
+
+                key = input("  SSH key path (e.g., ~/.ssh/id_rsa): ").strip()
+                if key:
+                    ssh_config['key'] = key
+
+                user = input("  SSH user: ").strip()
+                if user:
+                    ssh_config['user'] = user
+
+                host = input("  SSH host: ").strip()
+                if host:
+                    ssh_config['host'] = host
+
+                wp_path = input("  WordPress path on server (e.g., ~/public_html): ").strip()
+                if wp_path:
+                    ssh_config['wp_path'] = wp_path
+
+                if ssh_config:
+                    config['ssh'] = ssh_config
         elif response.status_code == 401:
             print("✗ Authentication failed. Please check your credentials.")
             retry = input("Would you like to try again? (y/N): ").strip().lower()
