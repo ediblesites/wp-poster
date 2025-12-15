@@ -16,7 +16,7 @@ cd wp-poster
 # First-time setup (creates .wp-poster.json, tests connection)
 wp-post --init
 
-# Post a file (content posted as-is)
+# Post a file (content posted without Gutenberg conversion)
 wp-post my-file.html
 
 # Post as draft (overrides frontmatter status)
