@@ -33,6 +33,9 @@ wp-post my-file.html --test
 
 # Verbose mode - debug output
 wp-post my-file.html --verbose
+
+# Show active config file path
+wp-post --config-path
 ```
 
 ## Configuration
@@ -51,6 +54,26 @@ Config files are searched in this order (first match wins):
 4. **App default**: Script directory `.wp-poster.json`
 
 This means project-specific configs override global configs, and running from `/project/src/deep/` will find `/project/.wp-poster.json`.
+
+### Config File Format
+
+```json
+{
+  "site_url": "https://example.com",
+  "username": "your-username",
+  "app_password": "your-app-password",
+  "author_context": "default-author",
+  "default_format": "raw",
+  "ssh": {
+    "key": "~/.ssh/my_key",
+    "user": "ssh-user",
+    "host": "192.168.1.1",
+    "wp_path": "~/public_html"
+  }
+}
+```
+
+The `ssh` section is optional metadata for external tooling (not used by wp-post directly).
 
 ### Credential Validation
 Running `wp-post my-file.md` without credentials will show helpful error messages:

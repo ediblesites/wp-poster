@@ -733,6 +733,7 @@ def main():
     parser.add_argument('--app-password', help='WordPress application password')
     parser.add_argument('--draft', action='store_true', help='Post as draft')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
+    parser.add_argument('--config-path', action='store_true', help='Print path to active config file')
     parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
     parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks')
     parser.add_argument('--raw', action='store_true', help='Post content as-is (override format frontmatter)')
@@ -743,7 +744,17 @@ def main():
     # Handle --init flag
     if args.init:
         sys.exit(0 if init_config() else 1)
-    
+
+    # Handle --config-path flag
+    if args.config_path:
+        config_paths = get_config_paths()
+        for name, path, exists in config_paths:
+            if exists:
+                print(path)
+                sys.exit(0)
+        print("No config file found", file=sys.stderr)
+        sys.exit(1)
+
     # Handle --test flag (test mode doesn't need WordPress credentials)
     if args.test:
         if not args.file:
@@ -865,11 +876,17 @@ def main():
     )
     
     if result['success']:
-        print(f"✓ Successfully posted: {result['title']}")
-        print(f"  Post ID: {result['id']}")
-        print(f"  URL: {result['url']}")
+        print(json.dumps({
+            'success': True,
+            'id': result['id'],
+            'title': result['title'],
+            'url': result['url']
+        }))
     else:
-        print(f"✗ Failed to post: {result['error']}")
+        print(json.dumps({
+            'success': False,
+            'error': result['error']
+        }))
         sys.exit(1)
 
 
