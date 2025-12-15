@@ -5,7 +5,7 @@ Post files with frontmatter to WordPress via REST API.
 ## Installation
 
 ```bash
-git clone https://github.com/adam-marash/wp-poster
+git clone https://github.com/ediblesites/wp-poster
 cd wp-poster
 ./install.sh
 ```
