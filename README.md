@@ -121,7 +121,7 @@ wp-post my-file.md
 - **Text**: **bold**, *italic*, ~~strikethrough~~
 - **Lists**: ordered (1. 2. 3.) and unordered (- * +) with nesting
 - **Links**: `[text](url)`
-- **Images**: `![alt](path)` - uploads local/remote to WordPress
+- **Images**: `![alt](path)` - uploads to WordPress (re-uploads on each post)
 - **Blockquotes**: `>` including multi-line
 - **Code blocks**: ``` with syntax highlighting
 - **Tables**: `| header | header |`
