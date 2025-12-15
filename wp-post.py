@@ -12,13 +12,13 @@ import argparse
 import json
 import os
 import sys
-import base64
 from pathlib import Path
 import requests
 import yaml
-import markdown2
 from datetime import datetime
 import getpass
+
+from gutenberg import GutenbergConverter
 
 
 class WordPressPost:
@@ -28,11 +28,21 @@ class WordPressPost:
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
         self.uploaded_media = {}  # Track uploaded media: {url: media_id}
         
-    def parse_markdown_file(self, filepath):
-        """Parse markdown file with frontmatter"""
+    def parse_frontmatter_only(self, filepath):
+        """Parse just the frontmatter without processing content"""
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-        
+        if content.startswith('---'):
+            parts = content.split('---', 2)
+            if len(parts) >= 3:
+                return yaml.safe_load(parts[1]) or {}
+        return {}
+
+    def parse_markdown_file(self, filepath):
+        """Parse markdown file with frontmatter and convert to Gutenberg blocks"""
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
         # Split frontmatter and content
         if content.startswith('---'):
             parts = content.split('---', 2)
@@ -45,11 +55,20 @@ class WordPressPost:
         else:
             frontmatter = {}
             markdown_content = content
-            
-        # Convert markdown to Gutenberg blocks
-        blocks_content = self.markdown_to_gutenberg_blocks(markdown_content)
+
+        # Convert markdown to Gutenberg blocks using image handler
+        converter = GutenbergConverter(image_handler=self._handle_image)
+        blocks_content = converter.convert(markdown_content)
 
         return frontmatter, blocks_content
+
+    def _handle_image(self, image_url):
+        """Handle image URL - upload and return (final_url, media_id)"""
+        final_url = self.process_image_url(image_url)
+        if final_url:
+            media_id = self.uploaded_media.get(final_url)
+            return (final_url, media_id)
+        return (None, None)
 
     def parse_raw_file(self, filepath):
         """Parse file with frontmatter but keep content as-is (no markdown conversion)"""
@@ -71,503 +90,6 @@ class WordPressPost:
 
         return frontmatter, raw_content
 
-    def markdown_to_gutenberg_blocks(self, markdown_content):
-        """Convert markdown to Gutenberg block format"""
-        blocks = []
-        
-        # Split content into lines for processing
-        lines = markdown_content.split('\n')
-        current_block = []
-        current_type = None
-        in_code_block = False
-        in_list = False
-        list_items = []
-        
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            
-            # Handle code blocks
-            if line.startswith('```'):
-                if in_code_block:
-                    # End code block
-                    code_content = '\n'.join(current_block)
-                    blocks.append(f'<!-- wp:code -->\n<pre class="wp-block-code"><code>{code_content}</code></pre>\n<!-- /wp:code -->')
-                    current_block = []
-                    in_code_block = False
-                else:
-                    # Start code block
-                    in_code_block = True
-                    current_block = []
-                i += 1
-                continue
-            
-            if in_code_block:
-                current_block.append(line)
-                i += 1
-                continue
-            
-            # Handle headings
-            if line.startswith('#'):
-                # Process any accumulated paragraph content first
-                if current_block:
-                    paragraph_text = '\n'.join(current_block)
-                    if paragraph_text:
-                        processed_blocks = self.process_paragraph_with_images(paragraph_text)
-                        blocks.extend(processed_blocks)
-                    current_block = []
-
-                # Count the number of # symbols for heading level
-                level = len(line) - len(line.lstrip('#'))
-                heading_text = line[level:].strip()
-                blocks.append(f'<!-- wp:heading {{"level":{level}}} -->\n<h{level} class="wp-block-heading">{heading_text}</h{level}>\n<!-- /wp:heading -->')
-                i += 1
-                continue
-            
-            # Handle lists (including nested)
-            if self.is_list_item(line):
-                # Process any accumulated paragraph content first
-                if current_block:
-                    paragraph_text = '\n'.join(current_block)
-                    if paragraph_text:
-                        processed_blocks = self.process_paragraph_with_images(paragraph_text)
-                        blocks.extend(processed_blocks)
-                    current_block = []
-                
-                # Collect all consecutive list items starting from current line
-                list_lines = []
-                j = i
-                
-                # Collect all consecutive list items
-                while j < len(lines) and (self.is_list_item(lines[j]) or lines[j].strip() == ''):
-                    if lines[j].strip():  # Skip empty lines but don't break the list
-                        list_lines.append(lines[j])
-                    j += 1
-                
-                # Process the collected list
-                list_html, is_ordered = self.process_nested_list(list_lines)
-                
-                if is_ordered:
-                    blocks.append(f'<!-- wp:list {{"ordered":true}} -->\n{list_html}\n<!-- /wp:list -->')
-                else:
-                    blocks.append(f'<!-- wp:list -->\n{list_html}\n<!-- /wp:list -->')
-                
-                i = j  # Skip the processed lines
-                continue
-            
-            # Handle tables (basic support)
-            if '|' in line and i + 1 < len(lines) and '---' in lines[i + 1]:
-                # Start of a table
-                table_lines = [line]
-                j = i + 1
-                while j < len(lines) and '|' in lines[j]:
-                    table_lines.append(lines[j])
-                    j += 1
-                
-                # Convert table to HTML
-                table_html = self.markdown_table_to_html(table_lines)
-                blocks.append(f'<!-- wp:table -->\n<figure class="wp-block-table"><table>{table_html}</table></figure>\n<!-- /wp:table -->')
-                
-                # Skip processed lines
-                i = j
-                continue
-            
-            # Handle blockquotes (including multi-line)
-            if line.startswith('>'):
-                quote_lines = []
-                
-                # Collect all consecutive blockquote lines
-                while i < len(lines) and lines[i].startswith('>'):
-                    quote_content = lines[i][1:].strip()  # Remove '>' and strip
-                    if quote_content:  # Only add non-empty lines
-                        quote_lines.append(quote_content)
-                    elif quote_lines:  # Add empty line if we have content (for paragraph breaks)
-                        quote_lines.append('')
-                    i += 1
-                
-                # Process the collected blockquote
-                if quote_lines:
-                    # Remove trailing empty lines
-                    while quote_lines and not quote_lines[-1]:
-                        quote_lines.pop()
-                    
-                    # Convert to paragraphs (split by empty lines)
-                    quote_html = self.process_blockquote_content(quote_lines)
-                    blocks.append(f'<!-- wp:quote -->\n<blockquote class="wp-block-quote">{quote_html}</blockquote>\n<!-- /wp:quote -->')
-                continue
-            
-            # Handle empty lines (paragraph breaks)
-            if not line.strip():
-                if current_block:
-                    paragraph_text = '\n'.join(current_block)
-                    if paragraph_text:
-                        # Check for standalone images in the paragraph
-                        processed_blocks = self.process_paragraph_with_images(paragraph_text)
-                        blocks.extend(processed_blocks)
-                    current_block = []
-                i += 1
-                continue
-            
-            # Regular paragraph line
-            current_block.append(line)
-            i += 1
-        
-        # Handle any remaining paragraph
-        if current_block and not in_code_block:
-            paragraph_text = '\n'.join(current_block)
-            if paragraph_text:
-                processed_blocks = self.process_paragraph_with_images(paragraph_text)
-                blocks.extend(processed_blocks)
-        
-        return '\n\n'.join(blocks)
-    
-    def is_list_item(self, line):
-        """Check if line is a list item (ordered or unordered)"""
-        import re
-        # Unordered: -, *, +
-        # Ordered: 1., 2., 10., 1)
-        return re.match(r'^(\s*)([*\-+]|\d+[.)]) ', line) is not None
-    
-    def get_list_type(self, line):
-        """Determine if list item is ordered or unordered"""
-        import re
-        if re.match(r'^(\s*)\d+[.)] ', line):
-            return 'ordered'
-        return 'unordered'
-    
-    def extract_list_item_content(self, line):
-        """Extract the content of a list item, removing the marker"""
-        import re
-        # Match the list marker and extract content
-        match = re.match(r'^(\s*)([*\-+]|\d+[.)]) (.*)$', line)
-        if match:
-            return match.group(3)  # The content after the marker
-        return line.strip()
-    
-    def get_indentation_level(self, line):
-        """Get the indentation level of a line (number of leading spaces)"""
-        return len(line) - len(line.lstrip())
-    
-    def process_nested_list(self, list_lines):
-        """Process a list with potential nesting into HTML"""
-        if not list_lines:
-            return "", False
-            
-        result_html = []
-        root_is_ordered = self.get_list_type(list_lines[0]) == 'ordered'
-        
-        # For simple flat lists (most common case), use simple logic
-        if all(self.get_indentation_level(line) == 0 for line in list_lines):
-            # All items at same level - create single list
-            tag = 'ol' if root_is_ordered else 'ul'
-            result_html.append(f'<{tag}>')
-            
-            for line in list_lines:
-                content = self.extract_list_item_content(line)
-                processed_content = self.process_inline_markdown_no_images(content)
-                result_html.append(f'<li>{processed_content}</li>')
-            
-            result_html.append(f'</{tag}>')
-            return '\n'.join(result_html), root_is_ordered
-        
-        # Handle nested lists with stack-based approach
-        stack = []  # Stack of (tag, level) tuples
-        
-        for line in list_lines:
-            indent_level = self.get_indentation_level(line)
-            content = self.extract_list_item_content(line)
-            is_ordered = self.get_list_type(line) == 'ordered'
-            
-            # Determine target depth (every 2 spaces = 1 level)
-            target_depth = indent_level // 2
-            current_depth = len(stack)
-            
-            # Close deeper levels
-            while current_depth > target_depth:
-                tag, _ = stack.pop()
-                result_html.append(f'</{tag}>')
-                current_depth -= 1
-            
-            # Open new levels if needed
-            while current_depth < target_depth:
-                if current_depth == 0:
-                    # Use the type of the first item for root level
-                    tag = 'ol' if root_is_ordered else 'ul'
-                else:
-                    # For nested levels, use the type of this item
-                    tag = 'ol' if is_ordered else 'ul'
-                result_html.append(f'<{tag}>')
-                stack.append((tag, current_depth))
-                current_depth += 1
-            
-            # Ensure we have a list container at current level
-            if not stack:
-                tag = 'ol' if root_is_ordered else 'ul'
-                result_html.append(f'<{tag}>')
-                stack.append((tag, 0))
-            
-            # Process inline markdown in the content
-            processed_content = self.process_inline_markdown_no_images(content)
-            result_html.append(f'<li>{processed_content}</li>')
-        
-        # Close all remaining levels
-        while stack:
-            tag, _ = stack.pop()
-            result_html.append(f'</{tag}>')
-        
-        return '\n'.join(result_html), root_is_ordered
-    
-    def process_blockquote_content(self, quote_lines):
-        """Process blockquote content, handling multiple paragraphs"""
-        if not quote_lines:
-            return ""
-        
-        # Split into paragraphs by empty lines
-        paragraphs = []
-        current_paragraph = []
-        
-        for line in quote_lines:
-            if line == '':
-                if current_paragraph:
-                    paragraphs.append(' '.join(current_paragraph))
-                    current_paragraph = []
-            else:
-                current_paragraph.append(line)
-        
-        # Add the last paragraph if any
-        if current_paragraph:
-            paragraphs.append(' '.join(current_paragraph))
-        
-        # Process each paragraph for inline markdown
-        processed_paragraphs = []
-        for paragraph in paragraphs:
-            processed = self.process_inline_markdown_no_images(paragraph)
-            processed_paragraphs.append(f'<p>{processed}</p>')
-        
-        return ''.join(processed_paragraphs)
-    
-    def process_html_images(self, text):
-        """Process HTML figure/img tags and convert to Gutenberg blocks"""
-        import re
-        
-        # Pattern for HTML figure with img and figcaption
-        figure_pattern = r'<figure[^>]*>\s*<img\s+([^>]+)\s*/?\>\s*(?:<figcaption[^>]*>(.*?)</figcaption>)?\s*</figure>'
-        
-        def replace_figure(match):
-            img_attrs = match.group(1)
-            caption = match.group(2) if match.group(2) else ""
-            
-            # Extract src and alt from img attributes
-            src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', img_attrs)
-            alt_match = re.search(r'alt\s*=\s*["\']([^"\']*)["\']', img_attrs)
-            
-            if not src_match:
-                return match.group(0)  # Return original if no src
-            
-            image_url = src_match.group(1)
-            alt_text = alt_match.group(1) if alt_match else ""
-            
-            # Process the image URL (download and upload to WordPress)
-            final_url = self.process_image_url(image_url)
-            
-            if final_url:
-                media_id = self.get_media_id_from_url(final_url)
-                
-                if caption and caption.strip():
-                    # Clean HTML tags from caption
-                    caption_clean = re.sub(r'<[^>]+>', '', caption).strip()
-                    if media_id:
-                        return f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/><figcaption class="wp-element-caption">{caption_clean}</figcaption></figure>\n<!-- /wp:image -->'
-                    else:
-                        return f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/><figcaption class="wp-element-caption">{caption_clean}</figcaption></figure>\n<!-- /wp:image -->'
-                else:
-                    # Image without caption
-                    if media_id:
-                        return f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/></figure>\n<!-- /wp:image -->'
-                    else:
-                        return f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/></figure>\n<!-- /wp:image -->'
-            else:
-                return match.group(0)  # Return original if processing failed
-        
-        # Replace figure tags first
-        text = re.sub(figure_pattern, replace_figure, text, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Also handle standalone img tags (not wrapped in figure)
-        # Use a simpler approach - find all img tags and filter out those in figure tags
-        standalone_img_pattern = r'<img\s+([^>]+)\s*/?\>'
-        
-        def replace_standalone_img(match):
-            # Skip if this img tag is already processed (would be inside a wp:image block)
-            if '<!-- wp:image' in match.group(0):
-                return match.group(0)
-            
-            img_attrs = match.group(1)
-            
-            # Extract src and alt from img attributes
-            src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', img_attrs)
-            alt_match = re.search(r'alt\s*=\s*["\']([^"\']*)["\']', img_attrs)
-            
-            if not src_match:
-                return match.group(0)  # Return original if no src
-            
-            image_url = src_match.group(1)
-            alt_text = alt_match.group(1) if alt_match else ""
-            
-            # Process the image URL
-            final_url = self.process_image_url(image_url)
-            
-            if final_url:
-                media_id = self.get_media_id_from_url(final_url)
-                
-                if media_id:
-                    return f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/></figure>\n<!-- /wp:image -->'
-                else:
-                    return f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/></figure>\n<!-- /wp:image -->'
-            else:
-                return match.group(0)  # Return original if processing failed
-        
-        # Only process standalone img tags (those not already converted)
-        if '<!-- wp:image' not in text:
-            text = re.sub(standalone_img_pattern, replace_standalone_img, text, flags=re.IGNORECASE)
-        
-        return text
-    
-    def process_paragraph_with_images(self, text):
-        """Process a paragraph that may contain images, splitting into separate blocks"""
-        import re
-        
-        blocks = []
-        
-        # First, handle HTML figure/img tags
-        processed_text = self.process_html_images(text)
-        
-        # Pattern for markdown images: ![alt text](url "optional title")
-        image_pattern = r'!\[([^\]]*)\]\(([^)]+?)(?:\s+"([^"]*)")?\)'
-        
-        # Split text by images
-        parts = re.split(image_pattern, processed_text)
-        
-        i = 0
-        while i < len(parts):
-            # Text part (could be before, between, or after images)
-            if i % 4 == 0:  # Text parts are at positions 0, 4, 8, etc.
-                text_part = parts[i].strip()
-                if text_part:
-                    # Check if this is already a processed image block
-                    if text_part.startswith('<!-- wp:image'):
-                        blocks.append(text_part)
-                    else:
-                        # Process other inline markdown
-                        text_part = self.process_inline_markdown_no_images(text_part)
-                        blocks.append(f'<!-- wp:paragraph -->\n<p>{text_part}</p>\n<!-- /wp:paragraph -->')
-            
-            # Image parts (alt, url, title) - positions 1,2,3 then 5,6,7, etc.
-            elif i % 4 == 1 and i + 2 < len(parts):
-                alt_text = parts[i]
-                image_url = parts[i + 1] 
-                title = parts[i + 2] if parts[i + 2] else alt_text
-                
-                # Process the image URL
-                final_url = self.process_image_url(image_url)
-                
-                if final_url:
-                    # Create Gutenberg image block with proper format
-                    media_id = self.get_media_id_from_url(final_url)
-                    
-                    if title and title.strip():
-                        # Image with caption
-                        if media_id:
-                            blocks.append(f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/><figcaption class="wp-element-caption">{title}</figcaption></figure>\n<!-- /wp:image -->')
-                        else:
-                            blocks.append(f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/><figcaption class="wp-element-caption">{title}</figcaption></figure>\n<!-- /wp:image -->')
-                    else:
-                        # Image without caption
-                        if media_id:
-                            blocks.append(f'<!-- wp:image {{"id":{media_id},"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}" class="wp-image-{media_id}"/></figure>\n<!-- /wp:image -->')
-                        else:
-                            blocks.append(f'<!-- wp:image {{"sizeSlug":"full","linkDestination":"none","align":"center"}} -->\n<figure class="wp-block-image aligncenter size-full"><img src="{final_url}" alt="{alt_text}"/></figure>\n<!-- /wp:image -->')
-                
-                i += 2  # Skip the url and title parts
-            
-            i += 1
-        
-        return blocks
-    
-    def get_media_id_from_url(self, url):
-        """Extract media ID from WordPress media URL if possible"""
-        return self.uploaded_media.get(url, None)
-    
-    def process_inline_markdown_no_images(self, text):
-        """Process inline markdown like bold, italic, strikethrough, and links (but not images)"""
-        import re
-        
-        # Convert line breaks to <br> tags (but not double line breaks which separate paragraphs)
-        # This handles the case where single line breaks should be preserved within a paragraph
-        text = re.sub(r'(?<!\n)\n(?!\n)', '<br>', text)
-        
-        # Strikethrough (must come before other formatting to avoid conflicts)
-        text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
-        
-        # Bold
-        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-        
-        # Italic
-        text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-        
-        # Links (but not images which start with !)
-        text = re.sub(r'(?<!\!)\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
-        
-        return text
-    
-    def process_inline_markdown(self, text):
-        """Process inline markdown like bold, italic, strikethrough, links, and images"""
-        import re
-        
-        # Process images first (before links)
-        text = self.process_inline_images(text)
-        
-        # Strikethrough (must come before other formatting to avoid conflicts)
-        text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
-        
-        # Bold
-        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-        
-        # Italic
-        text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-        
-        # Links (but not images which start with !)
-        text = re.sub(r'(?<!\!)\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
-        
-        return text
-    
-    def process_inline_images(self, text):
-        """Process inline images with figure/figcaption wrapping"""
-        import re
-        
-        # Pattern for markdown images: ![alt text](url "optional title")
-        image_pattern = r'!\[([^\]]*)\]\(([^)]+?)(?:\s+"([^"]*)")?\)'
-        
-        def replace_image(match):
-            alt_text = match.group(1)
-            image_url = match.group(2)
-            title = match.group(3) or alt_text
-            
-            # Handle local files and remote URLs
-            final_url = self.process_image_url(image_url)
-            
-            if final_url:
-                # Create figure with figcaption if we have alt text or title
-                if alt_text or title:
-                    caption = title if title else alt_text
-                    return f'<figure><img src="{final_url}" alt="{alt_text}" /><figcaption>{caption}</figcaption></figure>'
-                else:
-                    return f'<figure><img src="{final_url}" alt="" /></figure>'
-            else:
-                # If image processing failed, return original markdown
-                return match.group(0)
-        
-        return re.sub(image_pattern, replace_image, text)
-    
     def process_image_url(self, image_path_or_url):
         """Process image URL - upload local files and remote URLs to WordPress media library"""
         
@@ -612,37 +134,7 @@ class WordPressPost:
             else:
                 print(f"✗ Inline image file not found: {image_path_or_url}")
                 return None
-    
-    def markdown_table_to_html(self, table_lines):
-        """Convert markdown table to HTML"""
-        if len(table_lines) < 2:
-            return ""
-        
-        # Parse header
-        headers = [cell.strip() for cell in table_lines[0].split('|')[1:-1]]
-        
-        # Skip separator line
-        rows = []
-        for line in table_lines[2:]:
-            if '|' in line:
-                row = [cell.strip() for cell in line.split('|')[1:-1]]
-                rows.append(row)
-        
-        # Build HTML
-        html = '<thead><tr>'
-        for header in headers:
-            html += f'<th>{header}</th>'
-        html += '</tr></thead><tbody>'
-        
-        for row in rows:
-            html += '<tr>'
-            for cell in row:
-                html += f'<td>{cell}</td>'
-            html += '</tr>'
-        html += '</tbody>'
-        
-        return html
-    
+
     def get_categories(self):
         """Get all categories from WordPress, indexed by both name and slug"""
         response = requests.get(
@@ -1060,6 +552,19 @@ def find_local_config():
     return None
 
 
+def resolve_format(cli_markdown, cli_raw, frontmatter, config):
+    """Resolve format: CLI > frontmatter > config > default(raw)"""
+    if cli_raw:
+        return 'raw'
+    if cli_markdown:
+        return 'markdown'
+    if frontmatter.get('format') in ('raw', 'markdown'):
+        return frontmatter['format']
+    if config.get('default_format') in ('raw', 'markdown'):
+        return config['default_format']
+    return 'raw'
+
+
 def get_config_paths():
     """Get all config paths in precedence order with their status."""
     script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -1229,7 +734,8 @@ def main():
     parser.add_argument('--draft', action='store_true', help='Post as draft')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
     parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
-    parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks (default: post as-is)')
+    parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks')
+    parser.add_argument('--raw', action='store_true', help='Post content as-is (override format frontmatter)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Show detailed debug output')
     
     args = parser.parse_args()
@@ -1248,10 +754,15 @@ def main():
             print(f"Error: File '{args.file}' not found")
             sys.exit(1)
 
-        # Create a dummy poster instance just for parsing
+        # Create a dummy poster instance just for parsing (no image uploads in test mode)
         poster = WordPressPost('https://example.com', 'user', 'pass')
 
-        if args.markdown:
+        # Resolve format: CLI > frontmatter > config > default
+        config = load_config()
+        frontmatter_peek = poster.parse_frontmatter_only(args.file)
+        fmt = resolve_format(args.markdown, args.raw, frontmatter_peek, config)
+
+        if fmt == 'markdown':
             print(f"Converting {args.file} to Gutenberg blocks...")
             frontmatter, content = poster.parse_markdown_file(args.file)
 
@@ -1339,12 +850,16 @@ def main():
         config['username'],
         config['app_password']
     )
-    
+
+    # Resolve format: CLI > frontmatter > config > default
+    frontmatter_peek = poster.parse_frontmatter_only(args.file)
+    fmt = resolve_format(args.markdown, args.raw, frontmatter_peek, config)
+
     print(f"Posting {args.file} to {config['site_url']}...")
     result = poster.post_to_wordpress(
         args.file,
         draft=args.draft,
-        raw=not args.markdown,
+        raw=(fmt == 'raw'),
         author_context=config.get('author_context'),
         verbose=args.verbose
     )

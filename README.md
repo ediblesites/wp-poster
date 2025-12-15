@@ -13,17 +13,20 @@ cd wp-poster
 ## Usage
 
 ```bash
-# First-time setup
+# First-time setup (creates .wp-poster.json, tests connection)
 wp-post --init
 
 # Post a file (content posted as-is)
 wp-post my-file.html
 
-# Post as draft
+# Post as draft (overrides frontmatter status)
 wp-post my-file.html --draft
 
 # Convert markdown to Gutenberg blocks
 wp-post my-file.md --markdown
+
+# Force raw posting (override format frontmatter)
+wp-post my-file.md --raw
 
 # Test mode - preview without posting
 wp-post my-file.html --test
@@ -61,13 +64,14 @@ Running `wp-post my-file.md` without credentials will show helpful error message
 ---
 title: Post Title
 slug: post-slug
-status: draft|publish
+status: draft|publish  # --draft flag overrides this
+format: raw|markdown   # --markdown/--raw flags override this
 excerpt: Post excerpt
 author: username|user_id  # overrides config author_context
 post_type: post|page|custom-post-type
 template: template-name  # page template (for pages)
 parent: 123  # parent post ID (for hierarchical types)
-featured_image: image.jpg|https://example.com/image.jpg
+featured_image: path/to/image.jpg  # relative to cwd, or https://...
 categories: [Cat1, Cat2]  # posts only, auto-created if missing
 tags: [tag1, tag2]        # posts only, auto-created if missing
 taxonomies:
@@ -84,14 +88,30 @@ Config file supports `author_context` for default author (set via `--init`).
 
 Use `--verbose` or `-v` for detailed debug output.
 
-## Markdown Mode
+## Format
 
-Use `--markdown` to convert markdown files to Gutenberg blocks before posting.
+Content is posted raw by default. Use `format` frontmatter or `--markdown` flag for Gutenberg conversion.
+
+### Precedence
+
+Command line flags override frontmatter, which overrides config file defaults:
+
+| Source | Example | Notes |
+|--------|---------|-------|
+| Default | raw | content posted as-is |
+| Config | `"default_format": "markdown"` | set in `.wp-poster.json` |
+| Frontmatter | `format: markdown` | per-file setting |
+| CLI | `--markdown` / `--raw` | overrides all above |
 
 ```bash
-wp-post --markdown my-file.md
-wp-post --markdown --draft my-file.md
-wp-post --markdown --test my-file.md  # preview conversion
+# File has format: markdown, but post raw anyway
+wp-post my-file.md --raw
+
+# File has no format, convert to Gutenberg
+wp-post my-file.md --markdown
+
+# Let frontmatter decide
+wp-post my-file.md
 ```
 
 ### Supported Markdown
@@ -106,26 +126,11 @@ wp-post --markdown --test my-file.md  # preview conversion
 - **Tables**: `| header | header |`
 - **Shortcodes**: `[gallery]` - passed through to WordPress
 
-## Testing & Development
+## Test Mode
 
-### Test Mode
 Preview content without posting:
 
 ```bash
-# Preview file content
 wp-post my-file.html --test
-
-# Preview markdown conversion
 wp-post my-file.md --test --markdown
 ```
-
-## Recent Improvements
-
-- **Raw posting by default**: Content posted as-is; use `--markdown` for conversion to Gutenberg
-- **Smart config discovery**: Walks up directory tree to find project configs; local overrides global
-- **Author context**: Set default author in config; override per-post with `author` frontmatter
-- **Page templates**: Use `template` frontmatter for page template selection
-- **Hierarchical posts**: Use `parent` frontmatter for parent post ID
-- **Verbose mode**: Use `--verbose` or `-v` for detailed debug output
-- **Taxonomy auto-creation**: Categories, tags, and custom taxonomy terms are created if they don't exist
-- **Config info on bare run**: Running `wp-post` without arguments shows config file discovery
