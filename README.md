@@ -62,6 +62,7 @@ Running `wp-post my-file.md` without credentials will show helpful error message
 
 ```yaml
 ---
+id: 123  # update existing post (omit to create new)
 title: Post Title
 slug: post-slug
 status: draft|publish  # --draft flag overrides this
