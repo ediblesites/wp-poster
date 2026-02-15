@@ -399,9 +399,16 @@ class WordPressPost:
         
         if response.status_code in [200, 201]:
             post = response.json()
+            post_id = post['id']
+
+            # Handle Rank Math SEO meta via dedicated API
+            rankmath_meta = frontmatter.get('rankmath', {})
+            if rankmath_meta:
+                self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
+
             return {
                 'success': True,
-                'id': post['id'],
+                'id': post_id,
                 'url': post['link'],
                 'title': post['title']['rendered']
             }
@@ -420,6 +427,52 @@ class WordPressPost:
                 'status_code': response.status_code
             }
     
+    def update_rankmath_meta(self, post_id, rankmath_meta, verbose=False):
+        """Update Rank Math SEO meta via the Rank Math REST API.
+
+        Args:
+            post_id: WordPress post ID
+            rankmath_meta: Dict with keys like title, description, focus_keyword.
+                           Keys are mapped to rank_math_ prefixed meta keys.
+        """
+        # Map shorthand keys to full Rank Math meta keys
+        meta = {}
+        key_map = {
+            'title': 'rank_math_title',
+            'description': 'rank_math_description',
+            'focus_keyword': 'rank_math_focus_keyword',
+        }
+        for short_key, full_key in key_map.items():
+            if short_key in rankmath_meta:
+                meta[full_key] = rankmath_meta[short_key]
+        # Also allow passing full rank_math_ keys directly
+        for k, v in rankmath_meta.items():
+            if k.startswith('rank_math_'):
+                meta[k] = v
+
+        if not meta:
+            return
+
+        url = f"{self.site_url}/wp-json/rankmath/v1/updateMeta"
+        payload = {
+            'objectType': 'post',
+            'objectID': post_id,
+            'meta': meta,
+        }
+
+        if verbose:
+            print(f"[verbose] Rank Math meta: POST {url}")
+            print(f"[verbose] Rank Math payload: {json.dumps(payload, indent=2)}")
+
+        try:
+            resp = requests.post(url, auth=self.auth, json=payload, timeout=15)
+            if resp.status_code == 200:
+                print(f"✓ Rank Math SEO meta updated")
+            else:
+                print(f"⚠ Rank Math meta update failed: {resp.status_code} - {resp.text}")
+        except requests.RequestException as e:
+            print(f"⚠ Rank Math meta update error: {e}")
+
     def upload_media(self, filepath_or_url):
         """Upload media file to WordPress from local file or remote URL"""
         # Check if it's a URL

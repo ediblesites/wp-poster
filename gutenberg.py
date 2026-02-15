@@ -3,6 +3,7 @@ Markdown to Gutenberg block converter
 """
 
 import re
+from html import escape as html_escape
 
 
 class GutenbergConverter:
@@ -25,6 +26,7 @@ class GutenbergConverter:
         lines = markdown_content.split('\n')
         current_block = []
         in_code_block = False
+        code_lang = ''
 
         i = 0
         while i < len(lines):
@@ -33,18 +35,36 @@ class GutenbergConverter:
             # Handle code blocks
             if line.startswith('```'):
                 if in_code_block:
-                    code_content = '\n'.join(current_block)
-                    blocks.append(f'<!-- wp:code -->\n<pre class="wp-block-code"><code>{code_content}</code></pre>\n<!-- /wp:code -->')
+                    code_content = html_escape('\n'.join(current_block))
+                    if code_lang:
+                        blocks.append(f'<!-- wp:code -->\n<pre class="wp-block-code"><code class="language-{code_lang}">{code_content}</code></pre>\n<!-- /wp:code -->')
+                    else:
+                        blocks.append(f'<!-- wp:code -->\n<pre class="wp-block-code"><code>{code_content}</code></pre>\n<!-- /wp:code -->')
                     current_block = []
                     in_code_block = False
+                    code_lang = ''
                 else:
                     in_code_block = True
+                    lang_match = re.match(r'^```(\w+)', line)
+                    code_lang = lang_match.group(1) if lang_match else ''
                     current_block = []
                 i += 1
                 continue
 
             if in_code_block:
                 current_block.append(line)
+                i += 1
+                continue
+
+            # Handle horizontal rules
+            if re.match(r'^(-{3,}|\*{3,}|_{3,})\s*$', line):
+                if current_block:
+                    paragraph_text = '\n'.join(current_block)
+                    if paragraph_text:
+                        processed_blocks = self._process_paragraph_with_images(paragraph_text)
+                        blocks.extend(processed_blocks)
+                    current_block = []
+                blocks.append('<!-- wp:separator -->\n<hr class="wp-block-separator has-alpha-channel-opacity"/>\n<!-- /wp:separator -->')
                 i += 1
                 continue
 
@@ -374,12 +394,18 @@ class GutenbergConverter:
         return blocks
 
     def _process_inline_markdown(self, text):
-        """Process inline markdown like bold, italic, strikethrough, and links"""
+        """Process inline markdown like bold, italic, strikethrough, links, and code"""
         # Convert line breaks to <br> tags
         text = re.sub(r'(?<!\n)\n(?!\n)', '<br>', text)
 
+        # Inline code (before other formatting to protect code content)
+        text = re.sub(r'`(.+?)`', lambda m: f'<code>{html_escape(m.group(1))}</code>', text)
+
         # Strikethrough
         text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
+
+        # Bold + italic
+        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
 
         # Bold
         text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
