@@ -275,9 +275,15 @@ class WordPressPost:
         if verbose:
             print(f"[verbose] Post type: {post_type} → endpoint: {api_endpoint}")
 
+        # Require title in frontmatter
+        if 'title' not in frontmatter:
+            print(f"Error: No 'title' found in frontmatter of {filepath}")
+            print("Please add a 'title' field to the YAML frontmatter.")
+            return None
+
         # Prepare post data
         post_data = {
-            'title': frontmatter.get('title', Path(filepath).stem),
+            'title': frontmatter['title'],
             'content': content,
             'status': 'draft' if draft else frontmatter.get('status', 'publish'),
             'slug': frontmatter.get('slug', ''),
@@ -952,7 +958,10 @@ def main():
         author_context=config.get('author_context'),
         verbose=args.verbose
     )
-    
+
+    if result is None:
+        sys.exit(1)
+
     if result['success']:
         print(json.dumps({
             'success': True,
