@@ -62,7 +62,18 @@ Format resolution (first match wins): CLI flags → frontmatter `format:` → co
 
 Use `--test` before the real post when generating new content or converting markdown, to verify the output looks correct.
 
-### 4. Post-publish loop (new posts only)
+### 4. Images
+
+All images are uploaded to the WordPress media library automatically.
+
+- **Featured image**: set `featured_image:` in frontmatter to a local path or URL.
+- **Inline images** (markdown mode only): `![alt](file.jpg)` and `![alt](url)` are uploaded and their URLs are rewritten to the WordPress copy. `![alt](url "caption")` adds a `<figcaption>`. HTML `<figure>`/`<img>` tags are also handled.
+- Remote upload failure → original URL kept. Local file missing → image dropped.
+- `--test` skips all uploads.
+
+Images are re-uploaded on each post (no deduplication across runs).
+
+### 5. Post-publish loop (new posts only)
 
 This step is **critical** for new posts (no `id:` in frontmatter).
 
