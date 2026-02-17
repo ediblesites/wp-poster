@@ -85,28 +85,28 @@ Running `wp-post my-file.md` without credentials will show helpful error message
 
 ```yaml
 ---
-id: 123  # update existing post (omit to create new)
+id: 123                            # update existing post (omit to create new)
 title: Post Title
 slug: post-slug
-status: draft|publish  # --draft flag overrides this
-format: raw|markdown   # --markdown/--raw flags override this
+status: draft|publish              # --draft flag overrides this
+format: raw|markdown               # --markdown/--raw flags override this
 excerpt: Post excerpt
-author: username|user_id  # overrides config author_context
+author: username|user_id           # overrides config author_context
 post_type: post|page|custom-post-type
-template: template-name  # page template (for pages)
-parent: 123  # parent post ID (for hierarchical types)
+template: template-name            # page template (for pages)
+parent: 123                        # parent post ID (for hierarchical types)
 featured_image: path/to/image.jpg  # relative to cwd, or https://...
-categories: [Cat1, Cat2]  # posts only, auto-created if missing
-tags: [tag1, tag2]        # posts only, auto-created if missing
+categories: [Cat1, Cat2]           # posts only, auto-created if missing
+tags: [tag1, tag2]                 # posts only, auto-created if missing
 taxonomies:
-  custom_taxonomy: Term Name  # any taxonomy, auto-created if missing
+  custom_taxonomy: Term Name       # any taxonomy, auto-created if missing
 meta:
   custom_field: value
 acf:
   field_name: value
 rankmath:
-  title: SEO Title           # shorthand keys: title, description, focus_keyword
-  description: SEO desc      # full rank_math_* keys also accepted
+  title: SEO Title                 # shorthand keys: title, description, focus_keyword
+  description: SEO desc            # full rank_math_* keys also accepted
   focus_keyword: keyword
 date: 2025-01-01T10:00:00
 ---
