@@ -64,6 +64,25 @@ rankmath:                      # Rank Math SEO plugin
 | `acf`            | map           | no       | ACF field name-value pairs                             |
 | `rankmath`       | map           | no       | SEO meta; shorthand or full `rank_math_*` keys         |
 
+## Image handling
+
+All images are uploaded to the WordPress media library.
+
+**Featured image** (`featured_image` frontmatter): uploaded and set as post thumbnail.
+Accepts a local file path (relative to cwd) or a remote URL.
+
+**Inline images** (markdown mode only): images in the post body are uploaded and
+their URLs are rewritten to the WordPress media copy.
+
+- `![alt](local.jpg)` — local file uploaded
+- `![alt](https://...)` — remote URL downloaded and re-uploaded
+- `![alt](url "caption")` — `"caption"` becomes a `<figcaption>`
+- `<figure>/<img>` HTML tags — also detected and uploaded
+
+Failure: remote upload fails → original URL kept; local file missing → image dropped.
+
+Images are re-uploaded on each post (no cross-run deduplication). `--test` skips uploads.
+
 ## Format resolution (first match wins)
 
 1. CLI flags (`--raw`, `--markdown`)

@@ -148,13 +148,43 @@ wp-post my-file.md
 - **Text**: **bold**, *italic*, ~~strikethrough~~
 - **Lists**: ordered (1. 2. 3.) and unordered (- * +) with nesting
 - **Links**: `[text](url)`
-- **Images**: `![alt](path)` - uploads to WordPress (re-uploads on each post)
+- **Images**: `![alt](path)` and `![alt](url "caption")` — see [Images](#images) below
 - **Blockquotes**: `>` including multi-line
 - **Code blocks**: ``` with syntax highlighting
 - **Tables**: `| header | header |`
 - **Horizontal rules**: `---`, `***`, `___`
 - **Inline code**: `` `code` ``
 - **Shortcodes**: `[gallery]` - passed through to WordPress
+
+## Images
+
+All images are uploaded to the WordPress media library — both the `featured_image` frontmatter field and inline images in markdown mode.
+
+### Featured image
+
+Set `featured_image` in frontmatter to a local file path (relative to cwd) or a remote URL. The file is uploaded and set as the post thumbnail.
+
+### Inline images (markdown mode only)
+
+Inline images in the post body are uploaded and their URLs are rewritten to point to the WordPress media copy. Supported syntaxes:
+
+| Syntax                            | Behavior                                          |
+|-----------------------------------|---------------------------------------------------|
+| `![alt](local.jpg)`              | Local file uploaded to media library               |
+| `![alt](https://example.com/img)`| Remote URL downloaded and re-uploaded              |
+| `![alt](url "caption text")`     | Caption becomes a `<figcaption>` on the image block|
+| `<figure><img src="..."></figure>`| HTML image tags also detected and uploaded         |
+| `<img src="...">`                | Standalone img tags handled the same way           |
+
+**Failure behavior:**
+- Remote URL upload fails → original URL is kept as-is
+- Local file missing or upload fails → image is dropped from output
+
+All uploaded images become Gutenberg `wp:image` blocks (center-aligned, full size). When a caption is present, it appears as a `<figcaption>`.
+
+Images are re-uploaded on each post — the script does not deduplicate across runs.
+
+`--test` mode skips all uploads.
 
 ## Test Mode
 

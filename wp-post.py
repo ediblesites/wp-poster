@@ -843,6 +843,20 @@ format resolution (first match wins):
   3. Config 'default_format' setting
   4. Default: raw
 
+images:
+  featured_image in frontmatter uploads to the media library and sets
+  the post thumbnail. Accepts a local path or remote URL.
+
+  In markdown mode, inline images are also uploaded to the media library
+  and their URLs are rewritten to the WordPress copy:
+    - ![alt](local.jpg)           local file uploaded
+    - ![alt](https://...)         remote URL downloaded and re-uploaded
+    - ![alt](url "caption")      "caption" becomes a <figcaption>
+    - <figure>/<img> HTML tags    also detected and uploaded
+  If a remote upload fails, the original URL is kept. If a local file
+  is missing or fails to upload, the image is dropped from output.
+  --test mode skips all uploads.
+
 output:
   Omit id to create a new post; include id to update an existing one.
 
