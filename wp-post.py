@@ -809,7 +809,58 @@ def init_config():
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Post files with frontmatter to WordPress'
+        description='Post files with frontmatter to WordPress',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+frontmatter fields:
+  Input files use YAML frontmatter delimited by --- lines.
+
+  title           (required) Post title
+  id              Update existing post by ID instead of creating
+  status          draft or publish (default: publish, --draft overrides)
+  slug            URL slug
+  excerpt         Post excerpt
+  post_type       post, page, or custom post type (default: post)
+  format          raw or markdown (see format resolution below)
+  date            Publish date in ISO 8601 format
+  author          Username or user ID (overrides config author_context)
+  template        Page template name (hierarchical post types)
+  parent          Parent post ID (hierarchical post types)
+  featured_image  Local file path or URL (uploaded to media library)
+  categories      List of category names (posts only, auto-created)
+  tags            List of tag names (posts only, auto-created)
+  taxonomies      Custom taxonomies as {taxonomy: term} or {taxonomy: [terms]}
+                  Terms are auto-created if they don't exist
+  meta            Custom post meta as {key: value}
+  acf             Advanced Custom Fields as {field: value}
+  rankmath        Rank Math SEO meta with shorthand keys:
+                    title, description, focus_keyword
+                  Full rank_math_* keys also accepted
+
+format resolution (first match wins):
+  1. CLI flags (--raw, --markdown)
+  2. Frontmatter 'format' field
+  3. Config 'default_format' setting
+  4. Default: raw
+
+output:
+  JSON to stdout on success:
+    {"success": true, "id": 123, "title": "...", "url": "..."}
+  JSON to stdout on failure:
+    {"success": false, "error": "..."}
+  Progress and diagnostics are printed to stdout as plain text.
+
+example file:
+  ---
+  title: My Post
+  categories: [News, Updates]
+  tags: [release]
+  featured_image: header.jpg
+  rankmath:
+    focus_keyword: my topic
+  ---
+  Post content here (markdown if --markdown or format: markdown).
+"""
     )
     parser.add_argument('file', nargs='?', help='File to post')
     parser.add_argument('--site-url', help='WordPress site URL')

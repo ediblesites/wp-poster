@@ -104,6 +104,10 @@ meta:
   custom_field: value
 acf:
   field_name: value
+rankmath:
+  title: SEO Title           # shorthand keys: title, description, focus_keyword
+  description: SEO desc      # full rank_math_* keys also accepted
+  focus_keyword: keyword
 date: 2025-01-01T10:00:00
 ---
 ```
@@ -148,6 +152,8 @@ wp-post my-file.md
 - **Blockquotes**: `>` including multi-line
 - **Code blocks**: ``` with syntax highlighting
 - **Tables**: `| header | header |`
+- **Horizontal rules**: `---`, `***`, `___`
+- **Inline code**: `` `code` ``
 - **Shortcodes**: `[gallery]` - passed through to WordPress
 
 ## Test Mode
