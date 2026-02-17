@@ -816,7 +816,7 @@ frontmatter fields:
   Input files use YAML frontmatter delimited by --- lines.
 
   title           (required) Post title
-  id              Update existing post by ID instead of creating
+  id              Update existing post instead of creating new
   status          draft or publish (default: publish, --draft overrides)
   slug            URL slug
   excerpt         Post excerpt
@@ -844,6 +844,8 @@ format resolution (first match wins):
   4. Default: raw
 
 output:
+  Omit id to create a new post; include id to update an existing one.
+
   JSON to stdout on success:
     {"success": true, "id": 123, "title": "...", "url": "..."}
   JSON to stdout on failure:
