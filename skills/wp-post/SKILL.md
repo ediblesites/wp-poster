@@ -71,7 +71,7 @@ All images are uploaded to the WordPress media library automatically.
 - Remote upload failure → original URL kept. Local file missing → image dropped.
 - `--test` skips all uploads.
 
-Images are re-uploaded on each post (no deduplication across runs).
+The script re-uploads images on each post, but WordPress itself deduplicates by filename — if a file with the same name already exists in the media library, WordPress appends a suffix (e.g. `image-1.jpg`) rather than creating a true duplicate.
 
 ### 5. Post-publish loop (new posts only)
 
