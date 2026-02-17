@@ -1,0 +1,5 @@
+{
+  "name": "wp-poster",
+  "description": "Skill for publishing and updating WordPress posts via the wp-post CLI tool",
+  "version": "1.0.0"
+}

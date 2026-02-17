@@ -164,3 +164,15 @@ Preview content without posting:
 wp-post my-file.html --test
 wp-post my-file.md --test --markdown
 ```
+
+## Claude Code Skill
+
+This repo includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin with a `/wp-post` skill that teaches Claude how to publish and update posts using wp-post — including frontmatter authoring, format selection, and the create-then-update-local-file loop.
+
+### Install
+
+```bash
+/plugin install ediblesites/wp-poster
+```
+
+Then use `/wp-post` or just ask Claude to publish a file to WordPress.
