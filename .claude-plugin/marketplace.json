@@ -1,0 +1,16 @@
+{
+  "name": "wp-poster",
+  "owner": {
+    "name": "ediblesites"
+  },
+  "metadata": {
+    "description": "Claude Code skill for publishing to WordPress via wp-post"
+  },
+  "plugins": [
+    {
+      "name": "wp-poster",
+      "source": "./",
+      "description": "Skill for publishing and updating WordPress posts via the wp-post CLI tool"
+    }
+  ]
+}

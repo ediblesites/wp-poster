@@ -172,7 +172,8 @@ This repo includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 ### Install
 
 ```bash
-/plugin install ediblesites/wp-poster
+/plugin marketplace add ediblesites/wp-poster
+/plugin install wp-poster@wp-poster
 ```
 
 Then use `/wp-post` or just ask Claude to publish a file to WordPress.
