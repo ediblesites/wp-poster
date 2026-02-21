@@ -1,4 +1,4 @@
 requests>=2.31.0
 PyYAML>=6.0
-markdown2>=2.4.0
+mistune>=3.2.0
 pytest>=7.0

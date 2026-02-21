@@ -4,104 +4,50 @@ from gutenberg import GutenbergConverter
 
 
 # ---------------------------------------------------------------------------
-# Helper methods (pure functions)
-# ---------------------------------------------------------------------------
-
-class TestIsListItem:
-    def test_unordered_dash(self, converter):
-        assert converter._is_list_item("- item")
-
-    def test_unordered_asterisk(self, converter):
-        assert converter._is_list_item("* item")
-
-    def test_unordered_plus(self, converter):
-        assert converter._is_list_item("+ item")
-
-    def test_ordered_dot(self, converter):
-        assert converter._is_list_item("1. item")
-
-    def test_ordered_paren(self, converter):
-        assert converter._is_list_item("1) item")
-
-    def test_indented(self, converter):
-        assert converter._is_list_item("  - nested item")
-
-    def test_plain_text(self, converter):
-        assert not converter._is_list_item("just text")
-
-    def test_empty_string(self, converter):
-        assert not converter._is_list_item("")
-
-
-class TestGetListType:
-    def test_ordered(self, converter):
-        assert converter._get_list_type("1. item") == "ordered"
-
-    def test_unordered(self, converter):
-        assert converter._get_list_type("- item") == "unordered"
-
-    def test_ordered_paren(self, converter):
-        assert converter._get_list_type("2) item") == "ordered"
-
-
-class TestExtractListItemContent:
-    def test_unordered(self, converter):
-        assert converter._extract_list_item_content("- hello world") == "hello world"
-
-    def test_ordered(self, converter):
-        assert converter._extract_list_item_content("1. hello world") == "hello world"
-
-    def test_indented(self, converter):
-        assert converter._extract_list_item_content("  - nested") == "nested"
-
-
-class TestGetIndentationLevel:
-    def test_no_indent(self, converter):
-        assert converter._get_indentation_level("hello") == 0
-
-    def test_two_spaces(self, converter):
-        assert converter._get_indentation_level("  hello") == 2
-
-    def test_four_spaces(self, converter):
-        assert converter._get_indentation_level("    hello") == 4
-
-
-# ---------------------------------------------------------------------------
-# Inline markdown
+# Inline markdown (tested via convert() producing paragraph blocks)
 # ---------------------------------------------------------------------------
 
 class TestInlineMarkdown:
     def test_bold(self, converter):
-        result = converter._process_inline_markdown("**bold**")
+        result = converter.convert("**bold**")
         assert "<strong>bold</strong>" in result
 
     def test_italic(self, converter):
-        result = converter._process_inline_markdown("*italic*")
+        result = converter.convert("*italic*")
         assert "<em>italic</em>" in result
 
     def test_bold_italic(self, converter):
-        result = converter._process_inline_markdown("***both***")
-        assert "<strong><em>both</em></strong>" in result
+        result = converter.convert("***both***")
+        assert "<strong>" in result
+        assert "<em>" in result
+        assert "both" in result
 
     def test_strikethrough(self, converter):
-        result = converter._process_inline_markdown("~~deleted~~")
+        result = converter.convert("~~deleted~~")
         assert "<del>deleted</del>" in result
 
     def test_inline_code(self, converter):
-        result = converter._process_inline_markdown("use `foo()` here")
+        result = converter.convert("use `foo()` here")
         assert "<code>foo()</code>" in result
 
     def test_inline_code_escapes_html(self, converter):
-        result = converter._process_inline_markdown("`<div>`")
+        result = converter.convert("`<div>`")
         assert "<code>&lt;div&gt;</code>" in result
 
     def test_link(self, converter):
-        result = converter._process_inline_markdown("[click](https://example.com)")
+        result = converter.convert("[click](https://example.com)")
         assert '<a href="https://example.com">click</a>' in result
 
-    def test_line_break(self, converter):
-        result = converter._process_inline_markdown("line1\nline2")
-        assert "line1<br>line2" in result
+    def test_reference_link(self, converter):
+        md = "Visit [example][1] today.\n\n[1]: https://example.com"
+        result = converter.convert(md)
+        assert '<a href="https://example.com">example</a>' in result
+
+    def test_footnote(self, converter):
+        md = "Some text[^1].\n\n[^1]: Footnote content"
+        result = converter.convert(md)
+        assert "fnref-1" in result
+        assert "Footnote content" in result
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +68,11 @@ class TestHeadings:
     def test_h3(self, converter):
         result = converter.convert("### H3")
         assert '"level":3' in result
+
+    def test_heading_with_inline(self, converter):
+        result = converter.convert("## **bold** heading")
+        assert "wp:heading" in result
+        assert "<strong>bold</strong>" in result
 
 
 class TestParagraphs:
@@ -186,8 +137,14 @@ class TestLists:
         md = "- parent\n  - child"
         result = converter.convert(md)
         assert "wp:list" in result
-        assert "<li>parent</li>" in result
+        assert "parent" in result
         assert "<li>child</li>" in result
+
+    def test_list_with_inline_markdown(self, converter):
+        md = "- **bold** item\n- [link](https://example.com)"
+        result = converter.convert(md)
+        assert "<strong>bold</strong>" in result
+        assert '<a href="https://example.com">link</a>' in result
 
 
 class TestBlockquotes:
@@ -230,3 +187,43 @@ class TestImages:
         result = converter.convert('![alt](https://img.example.com/pic.jpg "My Caption")')
         assert "wp:image" in result
         assert "My Caption" in result
+
+    def test_standalone_image_not_wrapped_in_paragraph(self, converter):
+        result = converter.convert("![alt](https://img.example.com/pic.jpg)")
+        assert "wp:image" in result
+        assert "wp:paragraph" not in result
+
+    def test_image_mixed_with_text(self, converter):
+        md = "Before image.\n\n![alt](https://img.example.com/pic.jpg)\n\nAfter image."
+        result = converter.convert(md)
+        assert "wp:image" in result
+        assert result.count("wp:paragraph") >= 2
+
+
+# ---------------------------------------------------------------------------
+# Full document round-trip
+# ---------------------------------------------------------------------------
+
+class TestFullDocument:
+    def test_multiple_block_types(self, converter):
+        md = (
+            "# Title\n\n"
+            "A paragraph.\n\n"
+            "- item 1\n"
+            "- item 2\n\n"
+            "> a quote\n\n"
+            "---\n\n"
+            "```python\nx = 1\n```\n"
+        )
+        result = converter.convert(md)
+        assert "wp:heading" in result
+        assert "wp:paragraph" in result
+        assert "wp:list" in result
+        assert "wp:quote" in result
+        assert "wp:separator" in result
+        assert "wp:code" in result
+
+    def test_blocks_separated_by_double_newlines(self, converter):
+        result = converter.convert("# Heading\n\nParagraph")
+        parts = result.split("\n\n")
+        assert len(parts) >= 2
