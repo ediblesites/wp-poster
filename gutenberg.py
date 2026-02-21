@@ -196,7 +196,7 @@ def _gutenberg_table(renderer, text):
     return (
         f"<!-- wp:table -->\n"
         f'<figure class="wp-block-table"><table>{text}</table></figure>\n'
-        f"<!-- /wp:table -->"
+        f"<!-- /wp:table -->\n\n"
     )
 
 def _gutenberg_table_head(renderer, text):
