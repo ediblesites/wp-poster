@@ -218,6 +218,13 @@ class TestAdmonitions:
         assert "<code>code</code>" in result
         assert "<strong>" in result
 
+    def test_admonition_uses_wp_html_block(self, converter):
+        md = "> [!NOTE]\n> Text."
+        result = converter.convert(md)
+        assert "<!-- wp:html -->" in result
+        assert "<!-- /wp:html -->" in result
+        assert "wp:paragraph" not in result
+
     def test_admonition_has_inline_border_color(self, converter):
         md = "> [!WARNING]\n> Watch out."
         result = converter.convert(md)
