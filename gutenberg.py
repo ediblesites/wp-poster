@@ -280,21 +280,22 @@ _ADMONITION_STYLES = {
 
 
 def _render_gfm_admonition(renderer, text, name, **attrs):
-    """Render a GFM admonition as a wp:html block with GitHub-style styling."""
+    """Render a GFM admonition as a wp:quote with GitHub-style icon and border."""
     style = _ADMONITION_STYLES.get(name, {"icon": "", "color": "#666"})
     icon = style["icon"]
     color = style["color"]
-    # Strip Gutenberg block comments from inner content — we're inside
-    # a wp:html block so nested block markers would be meaningless.
-    inner = re.sub(r'<!-- /?wp:\w+ ?(?:\{[^}]*\} )?-->\n?', '', text)
-    return (
-        f"<!-- wp:html -->\n"
-        f'<blockquote class="wp-block-quote is-admonition is-admonition-{name}"'
-        f' style="border-left-color: {color};">'
+    title = (
+        f"<!-- wp:paragraph -->\n"
         f'<p style="color: {color}; font-weight: 500;">'
         f"{icon}{name.capitalize()}</p>\n"
-        f"{inner}</blockquote>\n"
-        f"<!-- /wp:html -->\n\n"
+        f"<!-- /wp:paragraph -->\n"
+    )
+    return (
+        f'<!-- wp:quote {{"className":"is-admonition is-admonition-{name}"}} -->\n'
+        f'<blockquote class="wp-block-quote is-admonition is-admonition-{name}"'
+        f' style="border-left-color: {color};">'
+        f"{title}{text}</blockquote>\n"
+        f"<!-- /wp:quote -->\n\n"
     )
 
 
