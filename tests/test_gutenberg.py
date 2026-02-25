@@ -161,6 +161,80 @@ class TestBlockquotes:
         assert "line 2" in result
 
 
+class TestAdmonitions:
+    def test_important(self, converter):
+        md = "> [!IMPORTANT]\n> This is important."
+        result = converter.convert(md)
+        assert "is-admonition" in result
+        assert "is-admonition-important" in result
+        assert "Important" in result
+        assert "This is important." in result
+
+    def test_note(self, converter):
+        md = "> [!NOTE]\n> A note."
+        result = converter.convert(md)
+        assert "is-admonition-note" in result
+        assert "Note</p>" in result
+
+    def test_tip(self, converter):
+        md = "> [!TIP]\n> A tip."
+        result = converter.convert(md)
+        assert "is-admonition-tip" in result
+        assert "Tip</p>" in result
+
+    def test_warning(self, converter):
+        md = "> [!WARNING]\n> Be careful."
+        result = converter.convert(md)
+        assert "is-admonition-warning" in result
+        assert "Warning</p>" in result
+
+    def test_caution(self, converter):
+        md = "> [!CAUTION]\n> Danger zone."
+        result = converter.convert(md)
+        assert "is-admonition-caution" in result
+        assert "Caution</p>" in result
+
+    def test_admonition_with_multiple_paragraphs(self, converter):
+        md = "> [!NOTE]\n>\n> First paragraph.\n>\n> Second paragraph."
+        result = converter.convert(md)
+        assert "is-admonition-note" in result
+        assert "First paragraph." in result
+        assert "Second paragraph." in result
+
+    def test_admonition_case_insensitive(self, converter):
+        md = "> [!important]\n> Text."
+        result = converter.convert(md)
+        assert "is-admonition-important" in result
+
+    def test_regular_blockquote_unchanged(self, converter):
+        result = converter.convert("> Just a regular quote.")
+        assert "is-admonition" not in result
+        assert "wp:quote" in result
+
+    def test_admonition_preserves_inline_formatting(self, converter):
+        md = "> [!TIP]\n> Use `code` and **bold** here."
+        result = converter.convert(md)
+        assert "is-admonition-tip" in result
+        assert "<code>code</code>" in result
+        assert "<strong>" in result
+
+    def test_admonition_has_inline_border_color(self, converter):
+        md = "> [!WARNING]\n> Watch out."
+        result = converter.convert(md)
+        assert 'style="border-left-color: #9a6700;"' in result
+
+    def test_admonition_has_svg_icon(self, converter):
+        md = "> [!NOTE]\n> Info here."
+        result = converter.convert(md)
+        assert "<svg" in result
+        assert 'fill="#0969da"' in result
+
+    def test_admonition_title_color_matches_type(self, converter):
+        md = "> [!CAUTION]\n> Danger."
+        result = converter.convert(md)
+        assert 'color: #d1242f;' in result
+
+
 class TestTables:
     def test_basic_table(self, converter):
         md = "| A | B |\n| --- | --- |\n| 1 | 2 |"
