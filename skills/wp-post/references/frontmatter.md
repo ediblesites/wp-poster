@@ -38,6 +38,8 @@ rankmath:                      # Rank Math SEO plugin
   description: SEO desc        # shorthand → rank_math_description
   focus_keyword: keyword       # shorthand → rank_math_focus_keyword
                                # full rank_math_* keys also accepted
+
+translation_set: about-us       # MSLS translation group key (multisite only)
 ---
 ```
 
@@ -63,6 +65,7 @@ rankmath:                      # Rank Math SEO plugin
 | `meta`           | map           | no       | Arbitrary key-value pairs                              |
 | `acf`            | map           | no       | ACF field name-value pairs                             |
 | `rankmath`       | map           | no       | SEO meta; shorthand or full `rank_math_*` keys         |
+| `translation_set` | string      | no       | Groups posts across multisite subsites for MSLS linking |
 
 ## Image handling
 

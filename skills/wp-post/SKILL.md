@@ -113,6 +113,31 @@ categories: [News]
 
 Place `id` right after `title` for readability.
 
+### 6. Translation linking (MSLS multisite)
+
+For WordPress multisite networks with MSLS, wp-post can automatically link
+translation siblings.
+
+Add `translation_set` to frontmatter to group posts across sites:
+
+```yaml
+---
+title: About Us
+translation_set: about-us
+---
+```
+
+On creating a new post, wp-post checks if siblings with the same
+`translation_set` exist on other sites (and have been published with an `id`).
+If so, it writes the MSLS options to link all members.
+
+- `translation_set` is opt-in. Posts without it are standalone.
+- Linking only happens on create, not update.
+- The first post in a set has nothing to link — linking occurs when the
+  second (or later) sibling is published.
+
+Set up a multisite project with `wp-post --init-network`.
+
 ## Configuration
 
 wp-post finds credentials from (first match wins):

@@ -9,8 +9,10 @@ warnings.filterwarnings("ignore", message="urllib3")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import argparse
+import glob as glob_mod
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 import requests
@@ -249,6 +251,60 @@ class WordPressPost:
                     return user['id']
         return None
 
+    def link_msls_translations(self, filepath, frontmatter, post_id, verbose=False):
+        """After creating a new post with translation_set, write MSLS links."""
+        translation_set = frontmatter.get('translation_set')
+        if not translation_set:
+            return
+
+        project_root, network_config = find_network_config(filepath)
+        if not project_root:
+            return
+
+        # Find which site this file belongs to by checking site content paths
+        file_abs = os.path.abspath(filepath)
+        sites = network_config.get('network', {}).get('sites', {})
+        current_site_key = None
+        for site_key, site_info in sites.items():
+            content_abs = os.path.abspath(os.path.join(project_root, site_info['content_path']))
+            if file_abs.startswith(content_abs):
+                current_site_key = site_key
+                break
+
+        if not current_site_key:
+            return
+
+        # Load current site config
+        site_config_path = os.path.join(project_root, current_site_key, '.wp-poster.json')
+        if not os.path.exists(site_config_path):
+            return
+        with open(site_config_path, 'r') as f:
+            site_config = json.load(f)
+
+        current_locale = site_config.get('locale', '')
+        current_blog_id = site_config.get('blog_id')
+
+        siblings = find_translation_siblings(
+            project_root, network_config, translation_set, current_locale
+        )
+
+        if not siblings:
+            if verbose:
+                print(f"[verbose] No translation siblings found for set '{translation_set}'")
+            return
+
+        current_post = {
+            'locale': current_locale,
+            'blog_id': current_blog_id,
+            'post_id': post_id,
+        }
+
+        wp_cli_alias = network_config.get('network', {}).get('wp_cli_alias', '')
+        if verbose:
+            print(f"[verbose] Writing MSLS links for {len(siblings) + 1} members")
+        write_msls_links(wp_cli_alias, current_post, siblings)
+        print(f"✓ MSLS translation links written ({len(siblings) + 1} members)")
+
     def post_to_wordpress(self, filepath, draft=False, raw=False, author_context=None, verbose=False):
         """Post file to WordPress"""
         if raw:
@@ -411,6 +467,10 @@ class WordPressPost:
             rankmath_meta = frontmatter.get('rankmath', {})
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
+
+            # MSLS translation linking (new posts only)
+            if 'id' not in frontmatter:
+                self.link_msls_translations(filepath, frontmatter, post_id, verbose=verbose)
 
             return {
                 'success': True,
@@ -611,6 +671,96 @@ def find_local_config():
     return None
 
 
+def find_network_config(filepath):
+    """From a file path, walk up to find a .wp-poster.json containing a 'network' key.
+
+    Returns (project_root, network_config) or (None, None).
+    """
+    current = Path(filepath).resolve().parent
+    while True:
+        config_path = current / '.wp-poster.json'
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            if 'network' in config:
+                return str(current), config
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None, None
+
+
+def find_translation_siblings(project_root, network_config, translation_set, exclude_locale):
+    """Find sibling posts with matching translation_set that have been published (have an id).
+
+    Returns list of {"locale": ..., "blog_id": ..., "post_id": ...}.
+    """
+    siblings = []
+    sites = network_config.get('network', {}).get('sites', {})
+
+    for site_key, site_info in sites.items():
+        content_path = os.path.join(project_root, site_info['content_path'])
+        if not os.path.isdir(content_path):
+            continue
+
+        # Load this site's config to get locale and blog_id
+        site_config_path = os.path.join(project_root, site_key, '.wp-poster.json')
+        if not os.path.exists(site_config_path):
+            continue
+        with open(site_config_path, 'r') as f:
+            site_config = json.load(f)
+
+        site_locale = site_config.get('locale', '')
+        if site_locale == exclude_locale:
+            continue
+
+        # Search for markdown files with matching translation_set
+        for md_path in glob_mod.glob(os.path.join(content_path, '**', '*.md'), recursive=True):
+            try:
+                # Reuse lightweight frontmatter parsing
+                with open(md_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                if not file_content.startswith('---'):
+                    continue
+                parts = file_content.split('---', 2)
+                if len(parts) < 3:
+                    continue
+                fm = yaml.safe_load(parts[1]) or {}
+                if fm.get('translation_set') == translation_set and 'id' in fm:
+                    siblings.append({
+                        'locale': site_locale,
+                        'blog_id': site_config.get('blog_id'),
+                        'post_id': fm['id'],
+                    })
+            except (OSError, yaml.YAMLError):
+                continue
+
+    return siblings
+
+
+def write_msls_links(wp_cli_alias, current_post, siblings):
+    """Write MSLS options for all members of a translation set.
+
+    current_post: {"locale": "en_US", "blog_id": 1, "post_id": 4773}
+    siblings: [{"locale": "es_ES", "blog_id": 2, "post_id": 266}, ...]
+    """
+    all_members = [current_post] + siblings
+
+    for member in all_members:
+        # Build this member's msls option: all OTHER members
+        others = {m['locale']: m['post_id'] for m in all_members if m != member}
+        option_value = json.dumps(others)
+
+        cmd = [
+            'wp', wp_cli_alias, 'eval',
+            f'switch_to_blog({member["blog_id"]}); '
+            f'update_option("msls_{member["post_id"]}", json_decode(\'{option_value}\', true)); '
+            f'restore_current_blog();'
+        ]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
     """Resolve format: CLI > frontmatter > config > default(raw)"""
     if cli_raw:
@@ -807,6 +957,151 @@ def init_config():
     return True
 
 
+def init_network_config():
+    """Interactive network (multisite) configuration setup."""
+    print("WordPress Multisite Network Configuration")
+    print("=" * 45)
+    print("\nThis will scaffold a multisite project directory.\n")
+
+    # Get WP-CLI alias
+    while True:
+        wp_cli_alias = input("WP-CLI alias (e.g., @payperfax): ").strip()
+        if wp_cli_alias:
+            break
+        print("WP-CLI alias is required.")
+
+    # Discover sites
+    print(f"\nDiscovering sites via: wp {wp_cli_alias} site list ...")
+    try:
+        result = subprocess.run(
+            ['wp', wp_cli_alias, 'site', 'list', '--format=json'],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            print(f"✗ wp site list failed: {result.stderr}")
+            return False
+        sites_data = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError) as e:
+        print(f"✗ Error discovering sites: {e}")
+        return False
+
+    if not sites_data:
+        print("✗ No sites found in the network.")
+        return False
+
+    print(f"Found {len(sites_data)} site(s):")
+    for site in sites_data:
+        print(f"  blog_id={site['blog_id']}  {site['url']}")
+
+    # Get locale for each site
+    print("\nQuerying locales...")
+    for site in sites_data:
+        try:
+            result = subprocess.run(
+                ['wp', wp_cli_alias, 'eval',
+                 f'switch_to_blog({site["blog_id"]}); '
+                 f'$l = get_option("WPLANG"); echo $l ?: "en_US"; '
+                 f'restore_current_blog();'],
+                capture_output=True, text=True, timeout=15
+            )
+            site['locale'] = result.stdout.strip() if result.returncode == 0 else 'en_US'
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            site['locale'] = 'en_US'
+        print(f"  blog_id={site['blog_id']}  locale={site['locale']}")
+
+    # Get shared credentials
+    print("\nShared credentials for all sites:")
+    while True:
+        username = input("  WordPress username: ").strip()
+        if username:
+            break
+        print("  Username is required.")
+    while True:
+        app_password = getpass.getpass("  Application Password: ").strip()
+        if app_password:
+            app_password = app_password.replace(' ', '')
+            break
+        print("  Application Password is required.")
+
+    # Test connection against first site
+    test_url = sites_data[0]['url'].rstrip('/')
+    print(f"\nTesting connection against {test_url} ...")
+    try:
+        response = requests.get(
+            f"{test_url}/wp-json/wp/v2/users/me",
+            auth=(username, app_password),
+            timeout=10
+        )
+        if response.status_code == 200:
+            user_data = response.json()
+            print(f"✓ Connected as: {user_data.get('name', username)}")
+        else:
+            print(f"✗ Authentication failed: HTTP {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"✗ Connection error: {e}")
+        return False
+
+    # Prompt for subdirectory names
+    print("\nSubdirectory names for each site:")
+    site_dirs = {}
+    for site in sites_data:
+        lang_prefix = site['locale'].split('_')[0]
+        default = lang_prefix
+        dir_name = input(f"  blog_id={site['blog_id']} ({site['locale']}) [{default}]: ").strip()
+        if not dir_name:
+            dir_name = default
+        site_dirs[site['blog_id']] = dir_name
+
+    # Scaffold directory structure
+    project_root = Path.cwd()
+    network_sites = {}
+
+    for site in sites_data:
+        dir_name = site_dirs[site['blog_id']]
+        site_dir = project_root / dir_name
+        content_dir = site_dir / 'content'
+
+        # Create directories
+        content_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write per-site config
+        site_config = {
+            'site_url': site['url'].rstrip('/'),
+            'username': username,
+            'app_password': app_password,
+            'locale': site['locale'],
+            'blog_id': int(site['blog_id']),
+        }
+        site_config_path = site_dir / '.wp-poster.json'
+        if not site_config_path.exists():
+            with open(site_config_path, 'w') as f:
+                json.dump(site_config, f, indent=2)
+            print(f"  ✓ {site_config_path}")
+        else:
+            print(f"  ⚠ {site_config_path} already exists, skipping")
+
+        network_sites[dir_name] = {
+            'content_path': f'{dir_name}/content/',
+        }
+
+    # Write root config
+    root_config = {
+        'network': {
+            'wp_cli_alias': wp_cli_alias,
+            'sites': network_sites,
+        }
+    }
+    root_config_path = project_root / '.wp-poster.json'
+    with open(root_config_path, 'w') as f:
+        json.dump(root_config, f, indent=2)
+    print(f"  ✓ {root_config_path}")
+
+    print(f"\n✓ Network project scaffolded with {len(sites_data)} site(s).")
+    print("Add 'translation_set' to frontmatter to link posts across sites.")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Post files with frontmatter to WordPress',
@@ -884,6 +1179,7 @@ example file:
     parser.add_argument('--app-password', help='WordPress application password')
     parser.add_argument('--draft', action='store_true', help='Post as draft')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
+    parser.add_argument('--init-network', action='store_true', help='Initialize multisite network project')
     parser.add_argument('--config-path', action='store_true', help='Print path to active config file')
     parser.add_argument('--ping', action='store_true', help='Test connection to the configured WordPress site')
     parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
@@ -896,6 +1192,10 @@ example file:
     # Handle --init flag
     if args.init:
         sys.exit(0 if init_config() else 1)
+
+    # Handle --init-network flag
+    if args.init_network:
+        sys.exit(0 if init_network_config() else 1)
 
     # Handle --config-path flag
     if args.config_path:
