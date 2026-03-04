@@ -1164,6 +1164,7 @@ frontmatter fields:
   rankmath        Rank Math SEO meta with shorthand keys:
                     title, description, focus_keyword
                   Full rank_math_* keys also accepted
+  translation_set MSLS translation group key (multisite only)
 
 format resolution (first match wins):
   1. CLI flags (--raw, --markdown)

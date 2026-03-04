@@ -6,7 +6,7 @@ description: >
   update an existing WordPress post, publish content to WordPress, draft a blog post
   for WordPress, or work with files that have wp-post YAML frontmatter.
   Also use when the user asks to "post this", "publish this", or "send to WordPress".
-  Handles frontmatter authoring, format selection, the create→update-local-file loop,
+  Handles frontmatter authoring, format selection, automatic id writeback,
   and wp-post invocation.
 allowed-tools:
   - Bash
@@ -26,7 +26,7 @@ Post files with YAML frontmatter to WordPress via REST API.
 ### 1. Determine create vs update
 
 - If the file already has `id:` in frontmatter → this is an **update**. Proceed to step 3.
-- If no `id:` → this is a **new post**. The post-publish loop (step 4) is required.
+- If no `id:` → this is a **new post**. `id` and `slug` are written back automatically after creation (step 5).
 
 ### 2. Author the file
 
