@@ -885,6 +885,7 @@ example file:
     parser.add_argument('--draft', action='store_true', help='Post as draft')
     parser.add_argument('--init', action='store_true', help='Initialize configuration interactively')
     parser.add_argument('--config-path', action='store_true', help='Print path to active config file')
+    parser.add_argument('--ping', action='store_true', help='Test connection to the configured WordPress site')
     parser.add_argument('--test', action='store_true', help='Test mode: preview content without posting')
     parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks')
     parser.add_argument('--raw', action='store_true', help='Post content as-is (override format frontmatter)')
@@ -905,6 +906,42 @@ example file:
                 sys.exit(0)
         print("No config file found", file=sys.stderr)
         sys.exit(1)
+
+    # Handle --ping flag
+    if args.ping:
+        config = load_config()
+        site_url = args.site_url or config.get('site_url')
+        username = args.username or config.get('username')
+        app_password = args.app_password or config.get('app_password')
+
+        if not all([site_url, username, app_password]):
+            print("✗ Missing credentials. Run --init or provide --site-url, --username, --app-password", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Pinging {site_url} ...")
+        try:
+            response = requests.get(
+                f"{site_url.rstrip('/')}/wp-json/wp/v2/users/me",
+                params={'context': 'edit'},
+                auth=(username, app_password),
+                timeout=10
+            )
+            if response.status_code == 200:
+                user_data = response.json()
+                print(f"✓ Connected as: {user_data.get('name', username)} (ID {user_data.get('id')})")
+                print(f"  Username: {username}")
+                print(f"  Site: {site_url}")
+                print(f"  Roles: {', '.join(user_data.get('roles', []))}")
+                sys.exit(0)
+            else:
+                print(f"✗ Authentication failed: HTTP {response.status_code}", file=sys.stderr)
+                sys.exit(1)
+        except requests.exceptions.ConnectionError:
+            print(f"✗ Could not connect to {site_url}", file=sys.stderr)
+            sys.exit(1)
+        except requests.exceptions.Timeout:
+            print(f"✗ Connection timed out", file=sys.stderr)
+            sys.exit(1)
 
     # Handle --test flag (test mode doesn't need WordPress credentials)
     if args.test:
