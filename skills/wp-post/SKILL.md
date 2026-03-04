@@ -73,45 +73,13 @@ All images are uploaded to the WordPress media library automatically.
 
 The script re-uploads images on each post, but WordPress itself deduplicates by filename — if a file with the same name already exists in the media library, the upload is ignored and the existing copy is used.
 
-### 5. Post-publish loop (new posts only)
+### 5. Automatic id/slug writeback (new posts only)
 
-This step is **critical** for new posts (no `id:` in frontmatter).
+When `wp-post` creates a new post (no `id:` in frontmatter), it automatically writes the returned `id` and resolved `slug` back into the file's frontmatter. This prevents duplicate posts on re-run.
 
-After `wp-post` succeeds, it prints JSON to stdout:
+No manual action is required. After a successful create, the file is updated in-place and `wp-post` prints `✓ Wrote id and slug back to <file>`.
 
-```json
-{"success": true, "id": 456, "title": "My New Post", "url": "https://example.com/my-new-post/"}
-```
-
-Immediately after a successful create:
-
-1. **Extract `id`** from the JSON output.
-2. **Extract the actual slug** from the `url` field (the path segment before the trailing slash).
-3. **Update the local file's frontmatter**: add `id: <id>` and correct `slug:` if WordPress resolved a conflict (e.g. you wrote `slug: my-post` but the URL shows `/my-post-2/`).
-4. Do NOT skip this step. Without it, the next `wp-post` run will create a **duplicate** post instead of updating.
-
-Example — before posting:
-
-```yaml
----
-title: My New Post
-slug: my-post
-categories: [News]
----
-```
-
-After posting (id 456 returned, slug was conflict-resolved):
-
-```yaml
----
-title: My New Post
-id: 456
-slug: my-post-2
-categories: [News]
----
-```
-
-Place `id` right after `title` for readability.
+If WordPress resolved a slug conflict (e.g. `my-post` → `my-post-2`), the `slug` field is updated to match.
 
 ### 6. Translation linking (MSLS multisite)
 

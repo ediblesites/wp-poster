@@ -251,6 +251,38 @@ class WordPressPost:
                     return user['id']
         return None
 
+    def _writeback_frontmatter(self, filepath, post_id, post_url):
+        """Write id and slug back into the file's frontmatter after a successful create."""
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        if not content.startswith('---'):
+            return
+
+        parts = content.split('---', 2)
+        if len(parts) < 3:
+            return
+
+        fm = yaml.safe_load(parts[1]) or {}
+        fm['id'] = post_id
+
+        # Extract slug from URL: last non-empty path segment
+        url_path = post_url.rstrip('/').split('/')
+        if url_path:
+            resolved_slug = url_path[-1]
+            # Only update if it looks like a slug (not a query string like ?p=123)
+            if '?' not in resolved_slug:
+                fm['slug'] = resolved_slug
+
+        new_frontmatter = yaml.dump(fm, default_flow_style=False, allow_unicode=True).rstrip()
+        body = parts[2]
+        new_content = f"---\n{new_frontmatter}\n---{body}"
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        print(f"✓ Wrote id and slug back to {filepath}")
+
     def link_msls_translations(self, filepath, frontmatter, post_id, verbose=False):
         """After creating a new post with translation_set, write MSLS links."""
         translation_set = frontmatter.get('translation_set')
@@ -468,8 +500,9 @@ class WordPressPost:
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
 
-            # MSLS translation linking (new posts only)
+            # Writeback id/slug and MSLS translation linking (new posts only)
             if 'id' not in frontmatter:
+                self._writeback_frontmatter(filepath, post_id, post['link'])
                 self.link_msls_translations(filepath, frontmatter, post_id, verbose=verbose)
 
             return {

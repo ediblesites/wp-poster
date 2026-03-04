@@ -548,7 +548,67 @@ class TestUpdateRankmathMeta:
 
 
 # ===========================================================================
-# 6. Network / MSLS translation support
+# 6. Writeback frontmatter (id/slug after create)
+# ===========================================================================
+
+class TestWritebackFrontmatter:
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_writes_id_and_slug_on_create(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "New Post", "slug": "new-post"}, "body text")
+        mock_post.return_value = mock_response(201, {
+            "id": 42, "link": "https://example.com/new-post/",
+            "title": {"rendered": "New Post"},
+        })
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+
+        # Re-read the file and check frontmatter
+        fm = wp.parse_frontmatter_only(path)
+        assert fm["id"] == 42
+        assert fm["slug"] == "new-post"
+        assert fm["title"] == "New Post"
+
+        # Body preserved
+        with open(path, 'r') as f:
+            content = f.read()
+        assert "body text" in content
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_no_writeback_on_update(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "Existing", "id": 99, "slug": "existing"}, "body")
+        mock_post.return_value = mock_response(200, {
+            "id": 99, "link": "https://example.com/existing/",
+            "title": {"rendered": "Existing"},
+        })
+        # Read original content
+        with open(path, 'r') as f:
+            original = f.read()
+
+        wp.post_to_wordpress(path, raw=True)
+
+        # File should be unchanged
+        with open(path, 'r') as f:
+            assert f.read() == original
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_slug_updated_on_conflict(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "My Post", "slug": "my-post"}, "body")
+        mock_post.return_value = mock_response(201, {
+            "id": 55, "link": "https://example.com/my-post-2/",
+            "title": {"rendered": "My Post"},
+        })
+        wp.post_to_wordpress(path, raw=True)
+
+        fm = wp.parse_frontmatter_only(path)
+        assert fm["id"] == 55
+        assert fm["slug"] == "my-post-2"
+
+
+# ===========================================================================
+# 7. Network / MSLS translation support
 # ===========================================================================
 
 def _scaffold_network(tmp_path, sites, translation_sets=None):
