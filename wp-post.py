@@ -17,6 +17,12 @@ import sys
 from pathlib import Path
 import requests
 import yaml
+
+# Use a persistent session with a browser UA so Cloudflare WAF doesn't block REST API POST requests
+_session = requests.Session()
+_session.headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+requests.get = _session.get
+requests.post = _session.post
 from datetime import datetime
 import getpass
 
@@ -29,6 +35,8 @@ class WordPressPost:
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
         self.uploaded_media = {}  # Track uploaded media: {url: media_id}
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         
     def parse_frontmatter_only(self, filepath):
         """Parse just the frontmatter without processing content"""
