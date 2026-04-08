@@ -1048,65 +1048,75 @@ class TestInitNetworkConfig:
 
 
 # ===========================================================================
-# Image dedup against the WordPress media library
+# Image dedup against the WordPress media library (article-scoped)
 # ===========================================================================
+#
+# Dedup is gated on the per-publish article scope set by post_to_wordpress.
+# The scope (derived from the markdown file's parent directory) prefixes the
+# WP target filename so each article's images live in their own slug namespace.
+# Without a scope (direct upload_media calls outside of a publish), dedup is
+# intentionally a pass-through: filename-only dedup is unsafe across articles
+# because basenames like hero.webp / body-1.webp commonly collide. See
+# ediblesites/wp-poster#5 for the regression that motivates this design.
 
 class TestImageDedup:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_dedup_hit_skips_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
-        """When the media library already has a matching attachment, reuse its id and skip POST."""
-        img = tmp_path / "dummy-image.jpg"
-        img.write_bytes(b"\xff\xd8\xff\xe0fake")
+    def test_scoped_dedup_hit_skips_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """When the media library already has a matching scoped attachment, reuse it and skip POST."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"webp-bytes")
         mock_get.return_value = mock_response(200, [
-            {"id": 42, "slug": "dummy-image",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/dummy-image.jpg"},
+            {"id": 42, "slug": "my-article-hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp"},
         ])
 
         media_id = wp.upload_media(str(img))
 
         assert media_id == 42
         mock_post.assert_not_called()
-        # The slug query should be against /media with slug=dummy-image
         get_call = mock_get.call_args
         assert "/wp-json/wp/v2/media" in get_call[0][0]
-        assert get_call[1]["params"]["slug"] == "dummy-image"
+        assert get_call[1]["params"]["slug"] == "my-article-hero"
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_dedup_miss_proceeds_with_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
-        """Empty slug query should fall through and POST a new attachment."""
-        img = tmp_path / "fresh-photo.jpg"
-        img.write_bytes(b"\xff\xd8\xff\xe0fresh")
+    def test_scoped_dedup_miss_proceeds_with_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """Empty slug query should fall through and POST a new attachment with the scoped filename."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "fresh.webp"
+        img.write_bytes(b"fresh-bytes")
         mock_get.return_value = mock_response(200, [])
         mock_post.return_value = mock_response(201, {
             "id": 99,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/fresh-photo.jpg",
+            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-fresh.webp",
         })
 
         media_id = wp.upload_media(str(img))
 
         assert media_id == 99
         mock_post.assert_called_once()
-        # The POST should be to /media (the upload endpoint)
-        assert "/wp-json/wp/v2/media" in mock_post.call_args[0][0]
+        # Content-Disposition must use the scoped filename (so WP stores it scoped)
+        cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
+        assert 'filename="my-article-fresh.webp"' in cd_header
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_dedup_filename_mismatch_proceeds_with_upload(
+    def test_scoped_dedup_filename_mismatch_proceeds_with_upload(
         self, mock_get, mock_post, wp, mock_response, tmp_path
     ):
-        """Slug match with a different file extension must NOT be treated as a hit."""
-        img = tmp_path / "shared-name.jpg"
-        img.write_bytes(b"\xff\xd8\xff\xe0jpeg")
-        # Existing media has the same slug but is a .png — must not be reused
+        """Scoped slug match with a different file extension must NOT be treated as a hit."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "shared.jpg"
+        img.write_bytes(b"jpeg")
         mock_get.return_value = mock_response(200, [
-            {"id": 7, "slug": "shared-name",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/shared-name.png"},
+            {"id": 7, "slug": "my-article-shared",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-shared.png"},
         ])
         mock_post.return_value = mock_response(201, {
             "id": 88,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/shared-name.jpg",
+            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-shared.jpg",
         })
 
         media_id = wp.upload_media(str(img))
@@ -1118,12 +1128,13 @@ class TestImageDedup:
     @patch("wp_post.requests.get")
     def test_in_run_cache_dedups_repeated_calls(self, mock_get, mock_post, wp, mock_response, tmp_path):
         """Calling upload_media twice for the same source should query/upload at most once."""
+        wp._current_article_scope = "my-article"
         img = tmp_path / "once.jpg"
-        img.write_bytes(b"\xff\xd8\xff\xe0once")
+        img.write_bytes(b"once")
         mock_get.return_value = mock_response(200, [])
         mock_post.return_value = mock_response(201, {
             "id": 11,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/once.jpg",
+            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-once.jpg",
         })
 
         first = wp.upload_media(str(img))
@@ -1134,24 +1145,96 @@ class TestImageDedup:
 
         assert first == 11
         assert second == 11
-        # Second call must hit the in-run cache and issue zero new HTTP calls
         assert mock_get.call_count == get_count_after_first
         assert mock_post.call_count == post_count_after_first
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_no_scope_skips_dedup_query(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """Without an article scope, upload_media must NOT query the media library
+        (filename-only dedup is unsafe across articles). It must just upload."""
+        wp._current_article_scope = None
+        img = tmp_path / "loose.jpg"
+        img.write_bytes(b"loose")
+        mock_post.return_value = mock_response(201, {
+            "id": 200,
+            "source_url": "https://example.com/wp-content/uploads/2026/04/loose.jpg",
+        })
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 200
+        mock_post.assert_called_once()
+        # No GET to /media (no dedup lookup) - the safety property
+        for call in mock_get.call_args_list:
+            assert "/wp-json/wp/v2/media" not in call[0][0]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_orphan_canonical_does_not_alias_scoped_upload(
+        self, mock_get, mock_post, wp, mock_response, tmp_path
+    ):
+        """Regression test for ediblesites/wp-poster#5.
+
+        The library has an orphan canonical attachment at slug "hero" (id 584)
+        from whichever article was published first long ago. A new article
+        publishing its own hero.webp must NOT be aliased to that orphan -
+        wp-post must query by the scoped slug "fresh-article-hero" which
+        returns empty, then upload a fresh scoped attachment.
+        """
+        wp._current_article_scope = "fresh-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"fresh-content")
+
+        def routed_get(url, **kwargs):
+            slug = kwargs.get("params", {}).get("slug", "")
+            resp = MagicMock()
+            resp.status_code = 200
+            if slug == "hero":
+                # The orphan canonical that the OLD code would have matched
+                resp.json.return_value = [{
+                    "id": 584, "slug": "hero",
+                    "source_url": "https://example.com/wp-content/uploads/hero.webp",
+                }]
+            else:
+                resp.json.return_value = []
+            return resp
+        mock_get.side_effect = routed_get
+        mock_post.return_value = mock_response(201, {
+            "id": 9999,
+            "source_url": "https://example.com/wp-content/uploads/fresh-article-hero.webp",
+        })
+
+        media_id = wp.upload_media(str(img))
+
+        # Critical: must NOT be aliased to the orphan id 584
+        assert media_id == 9999
+        assert media_id != 584
+        # The query must have been the scoped slug, not the bare basename
+        assert mock_get.call_args[1]["params"]["slug"] == "fresh-article-hero"
+        # And the POST went out with the scoped Content-Disposition filename
+        cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
+        assert 'filename="fresh-article-hero.webp"' in cd_header
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
     def test_featured_image_dedup_on_republish(
         self, mock_get, mock_post, wp, md_file, mock_response, tmp_path
     ):
-        """post_to_wordpress with a featured_image that already exists in the library
-        should reuse the existing attachment id and never POST to /media."""
+        """post_to_wordpress with a featured_image that already exists in the
+        scoped media library should reuse the existing attachment id and never
+        POST to /media."""
         img = tmp_path / "hero.jpg"
-        img.write_bytes(b"\xff\xd8\xff\xe0hero")
+        img.write_bytes(b"hero")
         path = md_file({"title": "Re-published", "featured_image": str(img)}, "body")
 
+        # Compute the scope wp-post will derive from this filepath at publish time
+        expected_scope = wp._article_scope_for(path)
+        scoped_slug = f"{expected_scope}-hero"
+
         mock_get.return_value = mock_response(200, [
-            {"id": 555, "slug": "hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/hero.jpg"},
+            {"id": 555, "slug": scoped_slug,
+             "source_url": f"https://example.com/wp-content/uploads/2026/04/{scoped_slug}.jpg"},
         ])
         mock_post.return_value = mock_response(201, {
             "id": 1, "link": "https://example.com/?p=1",
@@ -1166,3 +1249,21 @@ class TestImageDedup:
         post_call = mock_post.call_args
         assert "/wp-json/wp/v2/posts" in post_call[0][0]
         assert post_call[1]["json"]["featured_media"] == 555
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_article_scope_cleared_after_publish(
+        self, mock_get, mock_post, wp, md_file, mock_response, tmp_path
+    ):
+        """post_to_wordpress sets the scope; after the call returns the scope
+        must be cleared so subsequent direct upload_media calls don't reuse
+        a stale scope from a prior publish."""
+        path = md_file({"title": "T"}, "body")
+        mock_post.return_value = mock_response(201, {
+            "id": 1, "link": "https://example.com/?p=1",
+            "title": {"rendered": "T"},
+        })
+
+        wp.post_to_wordpress(path, raw=True)
+
+        assert wp._current_article_scope is None

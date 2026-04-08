@@ -36,6 +36,7 @@ class WordPressPost:
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
         self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
+        self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         
@@ -324,7 +325,21 @@ class WordPressPost:
         print(f"✓ MSLS translation links written ({len(siblings) + 1} members)")
 
     def post_to_wordpress(self, filepath, draft=False, raw=False, author_context=None, verbose=False):
-        """Post file to WordPress"""
+        """Post file to WordPress.
+
+        Sets the per-publish article scope so all media uploaded for this
+        article (featured image and inline images) are namespaced in the WP
+        media library, preventing cross-article filename collisions in dedup
+        lookups. The scope is cleared in finally so a failed publish doesn't
+        leak state onto subsequent calls.
+        """
+        self._current_article_scope = self._article_scope_for(filepath)
+        try:
+            return self._do_post_to_wordpress(filepath, draft, raw, author_context, verbose)
+        finally:
+            self._current_article_scope = None
+
+    def _do_post_to_wordpress(self, filepath, draft, raw, author_context, verbose):
         if raw:
             frontmatter, content = self.parse_raw_file(filepath)
             if verbose:
@@ -558,6 +573,32 @@ class WordPressPost:
         except requests.RequestException as e:
             print(f"⚠ Rank Math meta update error: {e}")
 
+    def _article_scope_for(self, filepath):
+        """Derive a stable, per-article scope from a markdown filepath.
+
+        Used as a filename prefix on uploads so that multiple articles which
+        ship images with the same basename (e.g. each article's own hero.webp
+        and body-1.webp) do not collide in the WP media library and don't
+        false-positive each other in find_existing_media lookups.
+
+        Strategy:
+          1. Use the parent directory basename if it exists and isn't generic.
+          2. Otherwise fall back to the markdown filename stem.
+          3. Sanitize to slug form (lowercase, hyphens).
+
+        Returns None if no usable scope can be derived.
+        """
+        if not filepath:
+            return None
+        abs_path = os.path.abspath(filepath)
+        parent_dir = os.path.basename(os.path.dirname(abs_path))
+        if parent_dir and parent_dir not in ('', '.', '/'):
+            scope_raw = parent_dir
+        else:
+            scope_raw = os.path.splitext(os.path.basename(abs_path))[0]
+        scope = re.sub(r'[^a-z0-9]+', '-', scope_raw.lower()).strip('-')
+        return scope or None
+
     def find_existing_media(self, filename):
         """Look up existing media by filename. Returns (id, source_url) or None.
 
@@ -590,11 +631,19 @@ class WordPressPost:
     def upload_media(self, filepath_or_url):
         """Upload media to WordPress, deduping against the existing media library.
 
+        When an article scope is set (post_to_wordpress sets it from the markdown
+        file's parent directory), the upload target filename is prefixed with
+        the scope to keep each article's images namespaced. This prevents
+        cross-article false positives in dedup queries when multiple articles
+        ship images with the same basename (e.g. hero.webp).
+
         Order of operations:
           1. In-run cache by source path/URL (avoids duplicate work in one run).
-          2. Pre-upload lookup via find_existing_media (avoids re-creating
-             attachments and the resulting filename suffixing on republish).
-          3. Actual upload via the file/URL helper.
+          2. Compute the scoped target filename for this upload.
+          3. Pre-upload lookup via find_existing_media against the target
+             filename (avoids re-creating attachments on republish).
+          4. Actual upload via the file/URL helper, using the target filename
+             in Content-Disposition.
 
         Returns the media id or None on failure.
         """
@@ -603,24 +652,31 @@ class WordPressPost:
             return cached[0]
 
         if filepath_or_url.startswith(('http://', 'https://')):
-            filename = os.path.basename(filepath_or_url.split('?')[0])
+            original_filename = os.path.basename(filepath_or_url.split('?')[0])
         else:
-            filename = os.path.basename(filepath_or_url)
+            original_filename = os.path.basename(filepath_or_url)
 
-        # Skip dedup query for sources without a usable filename (e.g.
-        # https://picsum.photos/400/300). Those will fall through and upload.
-        if filename and '.' in filename:
-            existing = self.find_existing_media(filename)
+        # Apply article scope to derive the target WP filename, and dedup only
+        # against the scoped name. Without a scope we cannot safely dedup by
+        # filename alone (different articles often share basenames like
+        # hero.webp), so the no-scope path uploads fresh without a query.
+        # Sources without a usable filename (e.g. https://picsum.photos/400/300)
+        # also skip dedup and upload with the helper's default name.
+        scope = self._current_article_scope
+        target_filename = original_filename
+        if scope and original_filename and '.' in original_filename:
+            target_filename = f"{scope}-{original_filename}"
+            existing = self.find_existing_media(target_filename)
             if existing:
                 media_id, source_url = existing
-                print(f"✓ Reusing existing media: {filename} (id={media_id})")
+                print(f"✓ Reusing existing media: {target_filename} (id={media_id})")
                 self._media_source_cache[filepath_or_url] = (media_id, source_url)
                 return media_id
 
         if filepath_or_url.startswith(('http://', 'https://')):
-            result = self.upload_media_from_url(filepath_or_url)
+            result = self.upload_media_from_url(filepath_or_url, target_filename=target_filename or None)
         else:
-            result = self.upload_media_from_file(filepath_or_url)
+            result = self.upload_media_from_file(filepath_or_url, target_filename=target_filename or None)
 
         if result:
             media_id, source_url = result
@@ -628,19 +684,23 @@ class WordPressPost:
             return media_id
         return None
     
-    def upload_media_from_url(self, url):
-        """Upload media from remote URL to WordPress"""
+    def upload_media_from_url(self, url, target_filename=None):
+        """Upload media from remote URL to WordPress.
+
+        target_filename, when provided, overrides the URL-derived filename
+        (used by upload_media to apply article-scope prefixing).
+        """
         try:
             print(f"Downloading featured image from URL: {url}")
-            
+
             # Download the image
             response = requests.get(url, timeout=30)
             if response.status_code != 200:
                 print(f"✗ Failed to download image from URL: {response.status_code}")
                 return None
-            
+
             media_data = response.content
-            
+
             # Get filename from URL or generate one
             filename = os.path.basename(url.split('?')[0])  # Remove query params
             if not filename or '.' not in filename:
@@ -656,14 +716,18 @@ class WordPressPost:
                     filename = 'image.webp'
                 else:
                     filename = 'image.jpg'  # Default
-            
+
+            # Article-scope override - upload_media has already prepended the scope
+            if target_filename:
+                filename = target_filename
+
             # Get content type
             content_type = response.headers.get('content-type', 'application/octet-stream')
-            
+
         except requests.exceptions.RequestException as e:
             print(f"✗ Error downloading image from URL: {e}")
             return None
-        
+
         headers = {
             'Content-Disposition': f'attachment; filename="{filename}"',
             'Content-Type': content_type
@@ -687,19 +751,22 @@ class WordPressPost:
             print(f"✗ Failed to upload featured image: {upload_response.status_code} - {upload_response.text}")
             return None
 
-    def upload_media_from_file(self, filepath):
-        """Upload media from local file to WordPress"""
+    def upload_media_from_file(self, filepath, target_filename=None):
+        """Upload media from local file to WordPress.
+
+        target_filename, when provided, overrides the basename of filepath
+        (used by upload_media to apply article-scope prefixing).
+        """
         if not os.path.exists(filepath):
             print(f"Warning: Featured image file '{filepath}' not found")
             return None
-            
+
         with open(filepath, 'rb') as f:
             media_data = f.read()
-        
-        filename = os.path.basename(filepath)
-        
-        # Determine content type based on file extension
-        ext = os.path.splitext(filename)[1].lower()
+
+        # Determine content type from the SOURCE file's extension (the on-disk
+        # extension is authoritative; target_filename always preserves it).
+        source_ext = os.path.splitext(os.path.basename(filepath))[1].lower()
         content_type_map = {
             '.jpg': 'image/jpeg',
             '.jpeg': 'image/jpeg',
@@ -710,9 +777,10 @@ class WordPressPost:
             '.doc': 'application/msword',
             '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         }
-        
-        content_type = content_type_map.get(ext, 'application/octet-stream')
-        
+        content_type = content_type_map.get(source_ext, 'application/octet-stream')
+
+        filename = target_filename or os.path.basename(filepath)
+
         headers = {
             'Content-Disposition': f'attachment; filename="{filename}"',
             'Content-Type': content_type
@@ -1233,12 +1301,19 @@ images:
   If a remote upload fails, the original URL is kept. If a local file
   is missing or fails to upload, the image is dropped from output.
 
-  Before uploading, the script queries the WordPress media library by
-  filename and reuses an existing attachment when one matches, so
-  republishing a post does not create duplicates or trigger filename
-  suffixing (image-1.jpg, image-2.jpg, ...). Sources without a usable
-  filename in the URL (e.g. https://picsum.photos/400/300) cannot be
-  deduped and will upload fresh on each run.
+  Each article publishes its media into a per-article namespace in the
+  WordPress media library. The namespace (scope) is derived from the
+  markdown file's parent directory basename, sanitized to slug form, and
+  is prefixed onto every uploaded filename - so an article in
+  content/my-post/ uploads its hero.webp as my-post-hero.webp. Before
+  uploading, the script queries by the scoped slug and reuses any
+  existing attachment, so republishing a post does not create duplicates
+  or trigger filename suffixing (image-1.jpg, image-2.jpg, ...). The
+  scoping prevents cross-article filename collisions when multiple
+  articles ship images with the same basename. Caveats: renaming an
+  article's parent directory orphans the prior scoped attachment;
+  sources without a usable filename (e.g. https://picsum.photos/400/300)
+  cannot be scoped and will upload fresh on each run.
   --test mode skips all uploads.
 
 output:

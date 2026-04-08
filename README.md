@@ -184,11 +184,17 @@ All uploaded images become Gutenberg `wp:image` blocks (center-aligned, full siz
 
 ### Media library dedup
 
-Before uploading, the script queries the WordPress media library for an existing attachment with the same filename. If a match is found, that attachment is reused instead of uploading a new copy, so republishing a post does **not** create duplicate media or trigger WordPress's `image-1.jpg`, `image-2.jpg` filename suffixing.
+Each article publishes its media into a per-article namespace in the WordPress media library. Before uploading, the script queries for an existing attachment under that namespace; if a match is found it is reused, so republishing a post does **not** create duplicate media or trigger WordPress's `image-1.jpg`, `image-2.jpg` filename suffixing.
 
-The lookup uses `GET /wp/v2/media?slug=<basename>` and verifies that a candidate's `source_url` ends with the exact requested filename, so a `foo.jpg` upload will not be confused with an existing `foo.png`.
+**How the namespace is derived:** the markdown file's parent directory basename, sanitized to slug form. For `content/old-tablet-bedtime-routine-display/index.md` the scope is `old-tablet-bedtime-routine-display`. For markdown files at the project root with no meaningful parent directory, the markdown filename stem is used as a fallback. The scope becomes a prefix on every image uploaded for that article: `hero.webp` from that article uploads as `old-tablet-bedtime-routine-display-hero.webp`. Inline images are scoped the same way as the featured image.
 
-**Limitation:** sources whose URL has no usable filename (e.g. `https://picsum.photos/400/300`) cannot be deduped because there is no stable name to query against. Those will upload fresh on each run.
+The lookup uses `GET /wp/v2/media?slug=<scope>-<basename>` and verifies that a candidate's `source_url` ends with the exact scoped filename, so a `foo.jpg` upload will not be confused with an existing `foo.png`. Cross-article filename collisions are impossible because the scope is part of the slug.
+
+**Caveats:**
+- Each article gets its own copy of every image, even if two articles intentionally reference the same source file (e.g. a site logo). For intentional cross-article sharing, reference the WordPress URL directly in your markdown instead of a local path.
+- Renaming an article's parent directory changes the scope, so the next publish uploads a fresh scoped attachment - the prior one becomes orphaned in the media library.
+- Sources whose URL has no usable filename (e.g. `https://picsum.photos/400/300`) cannot be scoped or deduped and will upload fresh on each run.
+- Calling `upload_media` directly without going through `post_to_wordpress` (no article context) intentionally skips the dedup query entirely - filename-only dedup is unsafe across articles.
 
 `--test` mode skips all uploads.
 
