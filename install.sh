@@ -1,6 +1,13 @@
 #!/bin/bash
 
 # WordPress Poster Installation Script
+# Installs runtime files to /opt/wp-poster and symlinks the launcher into
+# /usr/local/bin so every user on the system can run `wp-post`.
+
+set -e
+
+INSTALL_DIR="/opt/wp-poster"
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Installing WordPress Poster..."
 
@@ -8,11 +15,18 @@ echo "Installing WordPress Poster..."
 echo "Installing Python dependencies..."
 sudo apt update && sudo apt install -y python3-requests python3-yaml python3-mistune
 
+# Copy runtime files to a shared, world-readable location
+echo "Installing runtime files to $INSTALL_DIR..."
+sudo install -d -m 755 "$INSTALL_DIR"
+sudo install -m 755 "$SRC_DIR/wp-post"      "$INSTALL_DIR/wp-post"
+sudo install -m 644 "$SRC_DIR/wp-post.py"   "$INSTALL_DIR/wp-post.py"
+sudo install -m 644 "$SRC_DIR/gutenberg.py" "$INSTALL_DIR/gutenberg.py"
+
 # Create symlink for system-wide access
 echo "Creating system-wide command..."
-sudo ln -sf "$(pwd)/wp-post" /usr/local/bin/wp-post
+sudo ln -sf "$INSTALL_DIR/wp-post" /usr/local/bin/wp-post
 
-# Create config directory
+# Create per-user config directory for the invoking user
 mkdir -p ~/.config/wp-poster
 
 echo ""
