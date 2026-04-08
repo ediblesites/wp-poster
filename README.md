@@ -182,7 +182,13 @@ Inline images in the post body are uploaded and their URLs are rewritten to poin
 
 All uploaded images become Gutenberg `wp:image` blocks (center-aligned, full size). When a caption is present, it appears as a `<figcaption>`.
 
-Images are re-uploaded on each post — the script does not deduplicate across runs.
+### Media library dedup
+
+Before uploading, the script queries the WordPress media library for an existing attachment with the same filename. If a match is found, that attachment is reused instead of uploading a new copy, so republishing a post does **not** create duplicate media or trigger WordPress's `image-1.jpg`, `image-2.jpg` filename suffixing.
+
+The lookup uses `GET /wp/v2/media?slug=<basename>` and verifies that a candidate's `source_url` ends with the exact requested filename, so a `foo.jpg` upload will not be confused with an existing `foo.png`.
+
+**Limitation:** sources whose URL has no usable filename (e.g. `https://picsum.photos/400/300`) cannot be deduped because there is no stable name to query against. Those will upload fresh on each run.
 
 `--test` mode skips all uploads.
 

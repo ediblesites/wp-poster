@@ -1045,3 +1045,124 @@ class TestInitNetworkConfig:
             config = json.load(f)
         assert config['site_url'] == 'https://original.com'
         assert config['custom'] == 'value'
+
+
+# ===========================================================================
+# Image dedup against the WordPress media library
+# ===========================================================================
+
+class TestImageDedup:
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_dedup_hit_skips_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """When the media library already has a matching attachment, reuse its id and skip POST."""
+        img = tmp_path / "dummy-image.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0fake")
+        mock_get.return_value = mock_response(200, [
+            {"id": 42, "slug": "dummy-image",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/dummy-image.jpg"},
+        ])
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 42
+        mock_post.assert_not_called()
+        # The slug query should be against /media with slug=dummy-image
+        get_call = mock_get.call_args
+        assert "/wp-json/wp/v2/media" in get_call[0][0]
+        assert get_call[1]["params"]["slug"] == "dummy-image"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_dedup_miss_proceeds_with_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """Empty slug query should fall through and POST a new attachment."""
+        img = tmp_path / "fresh-photo.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0fresh")
+        mock_get.return_value = mock_response(200, [])
+        mock_post.return_value = mock_response(201, {
+            "id": 99,
+            "source_url": "https://example.com/wp-content/uploads/2026/04/fresh-photo.jpg",
+        })
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 99
+        mock_post.assert_called_once()
+        # The POST should be to /media (the upload endpoint)
+        assert "/wp-json/wp/v2/media" in mock_post.call_args[0][0]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_dedup_filename_mismatch_proceeds_with_upload(
+        self, mock_get, mock_post, wp, mock_response, tmp_path
+    ):
+        """Slug match with a different file extension must NOT be treated as a hit."""
+        img = tmp_path / "shared-name.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0jpeg")
+        # Existing media has the same slug but is a .png — must not be reused
+        mock_get.return_value = mock_response(200, [
+            {"id": 7, "slug": "shared-name",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/shared-name.png"},
+        ])
+        mock_post.return_value = mock_response(201, {
+            "id": 88,
+            "source_url": "https://example.com/wp-content/uploads/2026/04/shared-name.jpg",
+        })
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 88
+        mock_post.assert_called_once()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_in_run_cache_dedups_repeated_calls(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """Calling upload_media twice for the same source should query/upload at most once."""
+        img = tmp_path / "once.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0once")
+        mock_get.return_value = mock_response(200, [])
+        mock_post.return_value = mock_response(201, {
+            "id": 11,
+            "source_url": "https://example.com/wp-content/uploads/2026/04/once.jpg",
+        })
+
+        first = wp.upload_media(str(img))
+        get_count_after_first = mock_get.call_count
+        post_count_after_first = mock_post.call_count
+
+        second = wp.upload_media(str(img))
+
+        assert first == 11
+        assert second == 11
+        # Second call must hit the in-run cache and issue zero new HTTP calls
+        assert mock_get.call_count == get_count_after_first
+        assert mock_post.call_count == post_count_after_first
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_featured_image_dedup_on_republish(
+        self, mock_get, mock_post, wp, md_file, mock_response, tmp_path
+    ):
+        """post_to_wordpress with a featured_image that already exists in the library
+        should reuse the existing attachment id and never POST to /media."""
+        img = tmp_path / "hero.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0hero")
+        path = md_file({"title": "Re-published", "featured_image": str(img)}, "body")
+
+        mock_get.return_value = mock_response(200, [
+            {"id": 555, "slug": "hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/hero.jpg"},
+        ])
+        mock_post.return_value = mock_response(201, {
+            "id": 1, "link": "https://example.com/?p=1",
+            "title": {"rendered": "Re-published"},
+        })
+
+        result = wp.post_to_wordpress(path, raw=True)
+
+        assert result["success"] is True
+        # Exactly one POST: the post creation. Zero media POSTs.
+        assert mock_post.call_count == 1
+        post_call = mock_post.call_args
+        assert "/wp-json/wp/v2/posts" in post_call[0][0]
+        assert post_call[1]["json"]["featured_media"] == 555

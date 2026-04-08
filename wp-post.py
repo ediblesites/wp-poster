@@ -12,6 +12,7 @@ import argparse
 import glob as glob_mod
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +35,7 @@ class WordPressPost:
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
-        self.uploaded_media = {}  # Track uploaded media: {url: media_id}
+        self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         
@@ -73,12 +74,8 @@ class WordPressPost:
         return frontmatter, blocks_content
 
     def _handle_image(self, image_url):
-        """Handle image URL - upload and return (final_url, media_id)"""
-        final_url = self.process_image_url(image_url)
-        if final_url:
-            media_id = self.uploaded_media.get(final_url)
-            return (final_url, media_id)
-        return (None, None)
+        """Image handler callback for the markdown converter."""
+        return self.process_image_url(image_url)
 
     def parse_raw_file(self, filepath):
         """Parse file with frontmatter but keep content as-is (no markdown conversion)"""
@@ -101,49 +98,30 @@ class WordPressPost:
         return frontmatter, raw_content
 
     def process_image_url(self, image_path_or_url):
-        """Process image URL - upload local files and remote URLs to WordPress media library"""
-        
-        # If it's already a remote URL, upload it to WordPress
-        if image_path_or_url.startswith(('http://', 'https://')):
-            media_id = self.upload_media(image_path_or_url)
-            if media_id:
-                # Get the WordPress media URL
-                try:
-                    media_response = requests.get(f"{self.api_url}/media/{media_id}", auth=self.auth, timeout=30)
-                    if media_response.status_code == 200:
-                        media_url = media_response.json()['source_url']
-                        self.uploaded_media[media_url] = media_id  # Track the media ID
-                        print(f"✓ Downloaded and uploaded remote image: {image_path_or_url} → {media_url}")
-                        return media_url
-                except (requests.RequestException, KeyError, ValueError) as e:
-                    print(f"⚠ Error getting media URL: {e}")
-            
-            # If upload failed, fall back to original URL
+        """Process image URL - upload (or reuse existing) and return (final_url, media_id).
+
+        For remote URLs that fail to upload, falls back to (original_url, None) so the
+        post can still render with the source URL. For missing local files, returns
+        (None, None), which signals the markdown converter to drop the image.
+        """
+        is_url = image_path_or_url.startswith(('http://', 'https://'))
+
+        if not is_url and not os.path.exists(image_path_or_url):
+            print(f"✗ Inline image file not found: {image_path_or_url}")
+            return (None, None)
+
+        media_id = self.upload_media(image_path_or_url)
+        if media_id:
+            cached = self._media_source_cache.get(image_path_or_url)
+            if cached:
+                _, source_url = cached
+                return (source_url, media_id)
+
+        if is_url:
             print(f"⚠ Failed to upload remote image, using original URL: {image_path_or_url}")
-            return image_path_or_url
-        
-        # Local file - upload to WordPress
-        else:
-            # Check if file exists
-            if os.path.exists(image_path_or_url):
-                media_id = self.upload_media(image_path_or_url)
-                if media_id:
-                    # Get the WordPress media URL
-                    try:
-                        media_response = requests.get(f"{self.api_url}/media/{media_id}", auth=self.auth, timeout=30)
-                        if media_response.status_code == 200:
-                            media_url = media_response.json()['source_url']
-                            self.uploaded_media[media_url] = media_id  # Track the media ID
-                            print(f"✓ Uploaded inline image: {image_path_or_url} → {media_url}")
-                            return media_url
-                    except (requests.RequestException, KeyError, ValueError) as e:
-                        print(f"⚠ Error getting media URL: {e}")
-                
-                print(f"✗ Failed to upload inline image: {image_path_or_url}")
-                return None
-            else:
-                print(f"✗ Inline image file not found: {image_path_or_url}")
-                return None
+            return (image_path_or_url, None)
+        print(f"✗ Failed to upload inline image: {image_path_or_url}")
+        return (None, None)
 
     def get_categories(self):
         """Get all categories from WordPress, indexed by both name and slug"""
@@ -580,13 +558,75 @@ class WordPressPost:
         except requests.RequestException as e:
             print(f"⚠ Rank Math meta update error: {e}")
 
+    def find_existing_media(self, filename):
+        """Look up existing media by filename. Returns (id, source_url) or None.
+
+        Queries WordPress by attachment slug (which is derived from the filename
+        without extension via sanitize_title). Verifies that a candidate's
+        source_url ends with the exact requested filename so that slug collisions
+        across different file extensions are not treated as matches.
+        """
+        base = os.path.splitext(filename)[0]
+        slug_base = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-')
+        if not slug_base:
+            return None
+        try:
+            response = requests.get(
+                f"{self.api_url}/media",
+                auth=self.auth,
+                params={'slug': slug_base, 'per_page': 10},
+                timeout=30,
+            )
+            if response.status_code != 200:
+                return None
+            for item in response.json():
+                source_url = item.get('source_url', '')
+                if source_url.rsplit('/', 1)[-1].lower() == filename.lower():
+                    return (item['id'], source_url)
+        except (requests.RequestException, KeyError, ValueError) as e:
+            print(f"⚠ Error querying existing media for {filename}: {e}")
+        return None
+
     def upload_media(self, filepath_or_url):
-        """Upload media file to WordPress from local file or remote URL"""
-        # Check if it's a URL
+        """Upload media to WordPress, deduping against the existing media library.
+
+        Order of operations:
+          1. In-run cache by source path/URL (avoids duplicate work in one run).
+          2. Pre-upload lookup via find_existing_media (avoids re-creating
+             attachments and the resulting filename suffixing on republish).
+          3. Actual upload via the file/URL helper.
+
+        Returns the media id or None on failure.
+        """
+        cached = self._media_source_cache.get(filepath_or_url)
+        if cached:
+            return cached[0]
+
         if filepath_or_url.startswith(('http://', 'https://')):
-            return self.upload_media_from_url(filepath_or_url)
+            filename = os.path.basename(filepath_or_url.split('?')[0])
         else:
-            return self.upload_media_from_file(filepath_or_url)
+            filename = os.path.basename(filepath_or_url)
+
+        # Skip dedup query for sources without a usable filename (e.g.
+        # https://picsum.photos/400/300). Those will fall through and upload.
+        if filename and '.' in filename:
+            existing = self.find_existing_media(filename)
+            if existing:
+                media_id, source_url = existing
+                print(f"✓ Reusing existing media: {filename} (id={media_id})")
+                self._media_source_cache[filepath_or_url] = (media_id, source_url)
+                return media_id
+
+        if filepath_or_url.startswith(('http://', 'https://')):
+            result = self.upload_media_from_url(filepath_or_url)
+        else:
+            result = self.upload_media_from_file(filepath_or_url)
+
+        if result:
+            media_id, source_url = result
+            self._media_source_cache[filepath_or_url] = (media_id, source_url)
+            return media_id
+        return None
     
     def upload_media_from_url(self, url):
         """Upload media from remote URL to WordPress"""
@@ -642,11 +682,11 @@ class WordPressPost:
         if upload_response.status_code == 201:
             media_info = upload_response.json()
             print(f"✓ Featured image uploaded successfully: {media_info['source_url']}")
-            return media_info['id']
+            return (media_info['id'], media_info['source_url'])
         else:
             print(f"✗ Failed to upload featured image: {upload_response.status_code} - {upload_response.text}")
             return None
-    
+
     def upload_media_from_file(self, filepath):
         """Upload media from local file to WordPress"""
         if not os.path.exists(filepath):
@@ -691,7 +731,7 @@ class WordPressPost:
         if response.status_code == 201:
             media_info = response.json()
             print(f"✓ Featured image uploaded successfully: {media_info['source_url']}")
-            return media_info['id']
+            return (media_info['id'], media_info['source_url'])
         else:
             print(f"✗ Failed to upload featured image: {response.status_code} - {response.text}")
             return None
@@ -1192,6 +1232,13 @@ images:
     - <figure>/<img> HTML tags    also detected and uploaded
   If a remote upload fails, the original URL is kept. If a local file
   is missing or fails to upload, the image is dropped from output.
+
+  Before uploading, the script queries the WordPress media library by
+  filename and reuses an existing attachment when one matches, so
+  republishing a post does not create duplicates or trigger filename
+  suffixing (image-1.jpg, image-2.jpg, ...). Sources without a usable
+  filename in the URL (e.g. https://picsum.photos/400/300) cannot be
+  deduped and will upload fresh on each run.
   --test mode skips all uploads.
 
 output:
