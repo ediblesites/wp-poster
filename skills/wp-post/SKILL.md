@@ -104,7 +104,11 @@ If so, it writes the MSLS options to link all members.
 - The first post in a set has nothing to link — linking occurs when the
   second (or later) sibling is published.
 
-Set up a multisite project with `wp-post --init-network`.
+Set up a multisite project with `wp-post --init-network`. This writes a single
+root `.wp-poster.json` holding shared credentials plus a `network.sites` map,
+where each site entry carries `content_path`, `site_url`, `locale`, and
+`blog_id`. No per-site config files are needed (older per-site
+`.wp-poster.json` files are still honored as a fallback).
 
 ## Configuration
 

@@ -16,6 +16,8 @@ find_network_config = wp_post.find_network_config
 find_translation_siblings = wp_post.find_translation_siblings
 write_msls_links = wp_post.write_msls_links
 init_network_config = wp_post.init_network_config
+resolve_site_identity = wp_post.resolve_site_identity
+find_site_for_file = wp_post.find_site_for_file
 
 
 # ===========================================================================
@@ -660,6 +662,134 @@ def _scaffold_network(tmp_path, sites, translation_sets=None):
     return tmp_path
 
 
+def _scaffold_network_map(tmp_path, sites, translation_sets=None):
+    """Network project where site identity (site_url/locale/blog_id) lives in
+    the network.sites map and there are NO per-site .wp-poster.json files.
+    Shared credentials live at the root. Mirrors the consolidated single-config
+    layout (ediblesites/wp-poster#6).
+    """
+    network_sites = {}
+    for site in sites:
+        content_dir = tmp_path / site['key'] / 'content'
+        content_dir.mkdir(parents=True, exist_ok=True)
+        network_sites[site['key']] = {
+            'content_path': f"{site['key']}/content/",
+            'site_url': site['site_url'],
+            'locale': site['locale'],
+            'blog_id': site['blog_id'],
+        }
+
+    root_config = {
+        'username': 'claude',
+        'app_password': 'pass',
+        'network': {
+            'wp_cli_alias': '@testsite',
+            'sites': network_sites,
+        },
+    }
+    with open(tmp_path / '.wp-poster.json', 'w') as f:
+        json.dump(root_config, f)
+
+    if translation_sets:
+        for ts in translation_sets:
+            content_dir = tmp_path / ts['site_key'] / 'content'
+            filepath = content_dir / ts.get('filename', 'index.md')
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            parts = ['---', yaml.dump(ts['frontmatter'], default_flow_style=False).rstrip(), '---', 'Content']
+            filepath.write_text('\n'.join(parts), encoding='utf-8')
+
+    return tmp_path
+
+
+class TestResolveSiteIdentity:
+    def test_reads_identity_from_map(self, tmp_path):
+        sites = [{'key': 'es', 'site_url': 'https://example.com/es', 'locale': 'es_ES', 'blog_id': 2}]
+        root = _scaffold_network_map(tmp_path, sites)
+        with open(root / '.wp-poster.json') as f:
+            net = json.load(f)
+        site_info = net['network']['sites']['es']
+
+        ident = resolve_site_identity(str(root), 'es', site_info)
+        assert ident == {'site_url': 'https://example.com/es', 'locale': 'es_ES', 'blog_id': 2}
+
+    def test_falls_back_to_per_site_file(self, tmp_path):
+        # Old layout: map carries only content_path; identity in per-site file.
+        sites = [{'key': 'es', 'site_url': 'https://example.com/es', 'locale': 'es_ES', 'blog_id': 2}]
+        root = _scaffold_network(tmp_path, sites)
+        with open(root / '.wp-poster.json') as f:
+            net = json.load(f)
+        site_info = net['network']['sites']['es']  # only content_path
+
+        ident = resolve_site_identity(str(root), 'es', site_info)
+        assert ident['site_url'] == 'https://example.com/es'
+        assert ident['locale'] == 'es_ES'
+        assert ident['blog_id'] == 2
+
+    def test_map_partial_filled_from_file(self, tmp_path):
+        # Map supplies site_url+locale; blog_id only in the per-site file.
+        sites = [{'key': 'es', 'site_url': 'https://file/es', 'locale': 'es_ES', 'blog_id': 2}]
+        root = _scaffold_network(tmp_path, sites)
+        cfg_path = root / '.wp-poster.json'
+        net = json.loads(cfg_path.read_text())
+        net['network']['sites']['es'].update({'site_url': 'https://map/es', 'locale': 'es_ES'})
+        cfg_path.write_text(json.dumps(net))
+        site_info = net['network']['sites']['es']
+
+        ident = resolve_site_identity(str(root), 'es', site_info)
+        assert ident['site_url'] == 'https://map/es'  # map wins
+        assert ident['blog_id'] == 2                   # filled from file
+
+
+class TestFindSiteForFile:
+    def test_matches_site_by_path(self, tmp_path):
+        sites = [
+            {'key': 'en', 'site_url': 'https://e', 'locale': 'en_US', 'blog_id': 1},
+            {'key': 'es', 'site_url': 'https://e/es', 'locale': 'es_ES', 'blog_id': 2},
+        ]
+        root = _scaffold_network_map(tmp_path, sites)
+        with open(root / '.wp-poster.json') as f:
+            net = json.load(f)
+        target = tmp_path / 'es' / 'content' / 'privacy' / 'index.md'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('x')
+
+        key, info = find_site_for_file(str(root), net, str(target))
+        assert key == 'es'
+        assert info['blog_id'] == 2
+
+    def test_returns_none_outside_any_site(self, tmp_path):
+        sites = [{'key': 'en', 'site_url': 'https://e', 'locale': 'en_US', 'blog_id': 1}]
+        root = _scaffold_network_map(tmp_path, sites)
+        with open(root / '.wp-poster.json') as f:
+            net = json.load(f)
+        outside = tmp_path / 'other' / 'x.md'
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text('x')
+
+        key, info = find_site_for_file(str(root), net, str(outside))
+        assert key is None
+        assert info is None
+
+
+class TestFindTranslationSiblingsMapMode:
+    def test_finds_siblings_from_map_without_per_site_files(self, tmp_path):
+        sites = [
+            {'key': 'en', 'site_url': 'https://e', 'locale': 'en_US', 'blog_id': 1},
+            {'key': 'es', 'site_url': 'https://e/es', 'locale': 'es_ES', 'blog_id': 2},
+        ]
+        ts = [{'site_key': 'es', 'frontmatter': {'title': 'Acerca', 'id': 266, 'translation_set': 'about'}}]
+        root = _scaffold_network_map(tmp_path, sites, ts)
+        assert not (tmp_path / 'es' / '.wp-poster.json').exists()  # no per-site config
+        with open(root / '.wp-poster.json') as f:
+            net = json.load(f)
+
+        siblings = find_translation_siblings(str(root), net, 'about', 'en_US')
+        assert len(siblings) == 1
+        assert siblings[0]['locale'] == 'es_ES'
+        assert siblings[0]['blog_id'] == 2
+        assert siblings[0]['post_id'] == 266
+
+
 class TestFindNetworkConfig:
     def test_finds_network_config_above_file(self, tmp_path):
         sites = [{'key': 'en', 'site_url': 'https://example.com', 'locale': 'en_US', 'blog_id': 1}]
@@ -984,26 +1114,28 @@ class TestInitNetworkConfig:
 
         assert result is True
 
-        # Check root config
+        # Single consolidated root config: shared creds + full site identity map
         with open(tmp_path / '.wp-poster.json') as f:
             root_config = json.load(f)
+        assert root_config['username'] == 'admin'
+        assert root_config['app_password'] == 'test-pass'
         assert root_config['network']['wp_cli_alias'] == '@testsite'
-        assert 'en' in root_config['network']['sites']
-        assert 'es' in root_config['network']['sites']
 
-        # Check per-site configs
-        with open(tmp_path / 'en' / '.wp-poster.json') as f:
-            en_config = json.load(f)
-        assert en_config['site_url'] == 'https://en.example.com'
-        assert en_config['locale'] == 'en_US'
-        assert en_config['blog_id'] == 1
+        en_site = root_config['network']['sites']['en']
+        assert en_site['content_path'] == 'en/content/'
+        assert en_site['site_url'] == 'https://en.example.com'
+        assert en_site['locale'] == 'en_US'
+        assert en_site['blog_id'] == 1
 
-        with open(tmp_path / 'es' / '.wp-poster.json') as f:
-            es_config = json.load(f)
-        assert es_config['locale'] == 'es_ES'
-        assert es_config['blog_id'] == 2
+        es_site = root_config['network']['sites']['es']
+        assert es_site['locale'] == 'es_ES'
+        assert es_site['blog_id'] == 2
 
-        # Check content directories exist
+        # No per-site config files are written in the consolidated layout
+        assert not (tmp_path / 'en' / '.wp-poster.json').exists()
+        assert not (tmp_path / 'es' / '.wp-poster.json').exists()
+
+        # Content directories exist
         assert (tmp_path / 'en' / 'content').is_dir()
         assert (tmp_path / 'es' / 'content').is_dir()
 

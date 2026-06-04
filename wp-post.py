@@ -281,27 +281,19 @@ class WordPressPost:
             return
 
         # Find which site this file belongs to by checking site content paths
-        file_abs = os.path.abspath(filepath)
-        sites = network_config.get('network', {}).get('sites', {})
-        current_site_key = None
-        for site_key, site_info in sites.items():
-            content_abs = os.path.abspath(os.path.join(project_root, site_info['content_path']))
-            if file_abs.startswith(content_abs):
-                current_site_key = site_key
-                break
-
+        current_site_key, current_site_info = find_site_for_file(
+            project_root, network_config, filepath
+        )
         if not current_site_key:
             return
 
-        # Load current site config
-        site_config_path = os.path.join(project_root, current_site_key, '.wp-poster.json')
-        if not os.path.exists(site_config_path):
+        # Resolve current site's locale/blog_id from the network.sites map
+        # (falling back to a per-site config file when the map omits them).
+        identity = resolve_site_identity(project_root, current_site_key, current_site_info)
+        current_locale = identity.get('locale') or ''
+        current_blog_id = identity.get('blog_id')
+        if not current_locale:
             return
-        with open(site_config_path, 'r') as f:
-            site_config = json.load(f)
-
-        current_locale = site_config.get('locale', '')
-        current_blog_id = site_config.get('blog_id')
 
         siblings = find_translation_siblings(
             project_root, network_config, translation_set, current_locale
@@ -840,6 +832,48 @@ def find_network_config(filepath):
     return None, None
 
 
+def resolve_site_identity(project_root, site_key, site_info):
+    """Resolve a network site's identity (site_url, locale, blog_id).
+
+    Prefers values declared inline in the network.sites entry (site_info).
+    Falls back to a per-site <site_key>/.wp-poster.json for any missing key,
+    preserving backward compatibility with the older per-site-config layout.
+    """
+    identity = {
+        'site_url': site_info.get('site_url'),
+        'locale': site_info.get('locale'),
+        'blog_id': site_info.get('blog_id'),
+    }
+    if all(v is not None for v in identity.values()):
+        return identity
+
+    site_config_path = os.path.join(project_root, site_key, '.wp-poster.json')
+    if os.path.exists(site_config_path):
+        try:
+            with open(site_config_path, 'r') as f:
+                site_config = json.load(f)
+            for key in ('site_url', 'locale', 'blog_id'):
+                if identity[key] is None:
+                    identity[key] = site_config.get(key)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return identity
+
+
+def find_site_for_file(project_root, network_config, filepath):
+    """Return (site_key, site_info) for the network site whose content_path
+    contains filepath, or (None, None) if no site matches.
+    """
+    file_abs = os.path.abspath(filepath)
+    sites = network_config.get('network', {}).get('sites', {})
+    for site_key, site_info in sites.items():
+        content_abs = os.path.abspath(os.path.join(project_root, site_info['content_path']))
+        if file_abs.startswith(content_abs):
+            return site_key, site_info
+    return None, None
+
+
 def find_translation_siblings(project_root, network_config, translation_set, exclude_locale):
     """Find sibling posts with matching translation_set that have been published (have an id).
 
@@ -853,15 +887,11 @@ def find_translation_siblings(project_root, network_config, translation_set, exc
         if not os.path.isdir(content_path):
             continue
 
-        # Load this site's config to get locale and blog_id
-        site_config_path = os.path.join(project_root, site_key, '.wp-poster.json')
-        if not os.path.exists(site_config_path):
-            continue
-        with open(site_config_path, 'r') as f:
-            site_config = json.load(f)
-
-        site_locale = site_config.get('locale', '')
-        if site_locale == exclude_locale:
+        # Resolve locale/blog_id from the network.sites map (falling back to a
+        # per-site config file when the map omits them).
+        identity = resolve_site_identity(project_root, site_key, site_info)
+        site_locale = identity.get('locale') or ''
+        if not site_locale or site_locale == exclude_locale:
             continue
 
         # Search for markdown files with matching translation_set
@@ -879,7 +909,7 @@ def find_translation_siblings(project_root, network_config, translation_set, exc
                 if fm.get('translation_set') == translation_set and 'id' in fm:
                     siblings.append({
                         'locale': site_locale,
-                        'blog_id': site_config.get('blog_id'),
+                        'blog_id': identity.get('blog_id'),
                         'post_id': fm['id'],
                     })
             except (OSError, yaml.YAMLError):
@@ -1208,45 +1238,32 @@ def init_network_config():
 
     for site in sites_data:
         dir_name = site_dirs[site['blog_id']]
-        site_dir = project_root / dir_name
-        content_dir = site_dir / 'content'
-
-        # Create directories
+        content_dir = project_root / dir_name / 'content'
         content_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write per-site config
-        site_config = {
+        # Site identity lives inline in the network.sites map (no per-site files).
+        network_sites[dir_name] = {
+            'content_path': f'{dir_name}/content/',
             'site_url': site['url'].rstrip('/'),
-            'username': username,
-            'app_password': app_password,
             'locale': site['locale'],
             'blog_id': int(site['blog_id']),
         }
-        site_config_path = site_dir / '.wp-poster.json'
-        if not site_config_path.exists():
-            with open(site_config_path, 'w') as f:
-                json.dump(site_config, f, indent=2)
-            print(f"  ✓ {site_config_path}")
-        else:
-            print(f"  ⚠ {site_config_path} already exists, skipping")
 
-        network_sites[dir_name] = {
-            'content_path': f'{dir_name}/content/',
-        }
-
-    # Write root config
+    # Write single root config: shared credentials + full site map.
     root_config = {
+        'username': username,
+        'app_password': app_password,
         'network': {
             'wp_cli_alias': wp_cli_alias,
             'sites': network_sites,
-        }
+        },
     }
     root_config_path = project_root / '.wp-poster.json'
     with open(root_config_path, 'w') as f:
         json.dump(root_config, f, indent=2)
     print(f"  ✓ {root_config_path}")
 
-    print(f"\n✓ Network project scaffolded with {len(sites_data)} site(s).")
+    print(f"\n✓ Network project scaffolded with {len(sites_data)} site(s) in one config.")
     print("Add 'translation_set' to frontmatter to link posts across sites.")
     return True
 
@@ -1475,6 +1492,23 @@ example file:
     # Load configuration
     config = load_config()
     
+    # Network mode: when the target file lives under a network.sites content_path,
+    # resolve site_url (and fill in shared credentials) from the root network
+    # config, so a single root .wp-poster.json can serve every site. Explicit
+    # --site-url still wins.
+    if not args.site_url:
+        net_root, net_config = find_network_config(args.file)
+        if net_config:
+            site_key, site_info = find_site_for_file(net_root, net_config, args.file)
+            if site_info:
+                identity = resolve_site_identity(net_root, site_key, site_info)
+                if identity.get('site_url'):
+                    config['site_url'] = identity['site_url']
+            # Shared credentials may live in the root network config.
+            for key in ('username', 'app_password'):
+                if key not in config and key in net_config:
+                    config[key] = net_config[key]
+
     # Override with command line arguments
     if args.site_url:
         config['site_url'] = args.site_url
@@ -1482,7 +1516,7 @@ example file:
         config['username'] = args.username
     if args.app_password:
         config['app_password'] = args.app_password
-    
+
     # Validate required configuration
     required = ['site_url', 'username', 'app_password']
     missing = [key for key in required if key not in config]
