@@ -155,6 +155,29 @@ wp-post my-file.md
 - **Horizontal rules**: `---`, `***`, `___`
 - **Inline code**: `` `code` ``
 - **Shortcodes**: `[gallery]` - passed through to WordPress
+- **Embedded Gutenberg blocks**: raw `<!-- wp:... -->` markup - passed through verbatim, see below
+
+### Embedded Gutenberg blocks
+
+Raw Gutenberg block markup can be embedded in markdown, the same way HTML can be embedded in markdown:
+
+```markdown
+Regular markdown paragraph.
+
+<!-- wp:cover {"url":"https://example.com/bg.jpg"} -->
+<div class="wp-block-cover"><p>Cover content</p></div>
+<!-- /wp:cover -->
+
+More markdown.
+```
+
+Rules:
+
+- The opening `<!-- wp:... -->` comment must start at the beginning of a line.
+- Nested container blocks (`wp:columns`/`wp:column`, `wp:group`) and self-closing blocks (`<!-- wp:archives /-->`) are supported.
+- Content inside an embedded block is not processed: no markdown conversion, no escaping, and no image upload/rewrite. URLs inside embedded blocks are the author's responsibility.
+- An unclosed block is a fatal error reported with its file line number; the post is not created.
+- Gutenberg markup inside fenced code blocks is shown as code, not extracted.
 
 ## Images
 

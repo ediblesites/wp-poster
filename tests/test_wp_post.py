@@ -1399,3 +1399,24 @@ class TestImageDedup:
         wp.post_to_wordpress(path, raw=True)
 
         assert wp._current_article_scope is None
+
+
+# ===========================================================================
+# Malformed embedded Gutenberg blocks abort the post cleanly
+# ===========================================================================
+
+class TestMalformedEmbeddedGutenberg:
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unclosed_block_returns_none_no_post(self, mock_get, mock_post, wp, md_file, capsys):
+        body = "Intro.\n\n<!-- wp:cover -->\n<div>oops</div>"
+        path = md_file({"title": "T"}, body)
+        result = wp.post_to_wordpress(path)
+        assert result is None
+        mock_post.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Error" in out
+        assert "wp:cover" in out
+        # Line number is file-relative: ---, title: T, ---, Intro., blank
+        # put the opener at file line 6 (not body line 3).
+        assert "line 6" in out

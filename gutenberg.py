@@ -17,6 +17,95 @@ from mistune.plugins.table import table
 # paragraph() can promote them to wp:image blocks.
 _IMAGE_SENTINEL = "\x00GUTENBERG_IMAGE\x00"
 
+# Placeholder template for raw Gutenberg blocks extracted from the
+# source before markdown parsing (reinserted verbatim afterwards).
+_RAW_BLOCK_SENTINEL = "\x00GUTENBERG_RAW_{}\x00"
+
+# Matches a Gutenberg block comment delimiter: opener, closer, or
+# self-closing — e.g. <!-- wp:cover {"url":"x"} -->, <!-- /wp:cover -->,
+# <!-- wp:archives /-->.
+_WP_BLOCK_COMMENT_RE = re.compile(
+    r"<!--\s+(?P<close>/)?wp:(?P<name>[a-z][\w-]*(?:/[a-z][\w-]*)?)"
+    r"(?:\s+\{.*?\})?\s*(?P<self_close>/)?-->",
+    re.IGNORECASE,
+)
+
+
+def _extract_raw_gutenberg(text, line_offset=0):
+    """Extract top-level raw Gutenberg block regions from markdown source.
+
+    A region starts at a line beginning (column 0) with a Gutenberg
+    opening comment and runs to its matching closer, tracking nesting
+    depth so container blocks (wp:columns, wp:group) are captured whole.
+    Self-closing blocks are a complete region on their own.
+
+    Returns (text_with_placeholders, blocks) where each region in the
+    source is replaced by a unique placeholder paragraph.
+
+    Raises ValueError if an opening comment has no matching closer.
+    line_offset is added to reported line numbers so callers that strip
+    a prefix (e.g. frontmatter) can report file-relative positions.
+    """
+    lines = text.split("\n")
+    out_lines = []
+    blocks = []
+    fence = None  # open code-fence marker, e.g. "```" or "~~~~"
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+
+        # Skip extraction inside fenced code blocks so Gutenberg markup
+        # can be shown as a code example.
+        fence_m = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence is None and fence_m:
+            fence = fence_m.group(1)
+        elif fence and fence_m and fence_m.group(1)[0] == fence[0] \
+                and len(fence_m.group(1)) >= len(fence):
+            fence = None
+        if fence is not None or fence_m:
+            out_lines.append(line)
+            i += 1
+            continue
+
+        m = _WP_BLOCK_COMMENT_RE.match(line)
+        if not m or m.group("close"):
+            # Not a Gutenberg opener at column 0 (stray closers fall
+            # through to normal markdown handling).
+            out_lines.append(line)
+            i += 1
+            continue
+
+        open_name = m.group("name")
+        open_line_no = i + 1 + line_offset
+        depth = 0
+        region = []
+        j = i
+        while j < n:
+            cur = lines[j]
+            region.append(cur)
+            for cm in _WP_BLOCK_COMMENT_RE.finditer(cur):
+                if cm.group("self_close"):
+                    continue
+                depth += -1 if cm.group("close") else 1
+            j += 1
+            if depth == 0:
+                break
+
+        if depth != 0:
+            raise ValueError(
+                f"Unclosed Gutenberg block 'wp:{open_name}' "
+                f"opened at line {open_line_no}"
+            )
+
+        placeholder = _RAW_BLOCK_SENTINEL.format(len(blocks))
+        blocks.append("\n".join(region))
+        # Blank lines ensure the placeholder is parsed as its own paragraph.
+        out_lines.extend(["", placeholder, ""])
+        i = j
+
+    return "\n".join(out_lines), blocks
+
 
 def _wp_image_block(url, alt, title=None, media_id=None):
     """Build a wp:image Gutenberg block string."""
@@ -331,11 +420,36 @@ class GutenbergConverter:
         self._renderer.register("table_row", _gutenberg_table_row)
         self._renderer.register("table_cell", _gutenberg_table_cell)
 
-    def convert(self, markdown_content):
-        """Convert markdown to Gutenberg block format."""
-        raw = self._md(markdown_content)
+    def convert(self, markdown_content, line_offset=0):
+        """Convert markdown to Gutenberg block format.
+
+        line_offset shifts line numbers in error messages so callers
+        that strip a frontmatter prefix report file-relative positions.
+        """
+        # Pull raw Gutenberg regions out before parsing so they pass
+        # through verbatim (no escaping, no markdown processing).
+        text, raw_blocks = _extract_raw_gutenberg(
+            markdown_content, line_offset=line_offset
+        )
+
+        raw = self._md(text)
 
         # Collapse runs of blank lines and trim, then re-join blocks
         # with double-newlines for Gutenberg spacing.
         blocks = [b.strip() for b in re.split(r'\n{2,}', raw) if b.strip()]
-        return '\n\n'.join(blocks)
+        result = '\n\n'.join(blocks)
+
+        # Reinsert raw Gutenberg blocks, replacing the whole placeholder
+        # paragraph (not just the sentinel) so no wp:paragraph wrapper
+        # is left around the block.
+        for idx, block in enumerate(raw_blocks):
+            sentinel = _RAW_BLOCK_SENTINEL.format(idx)
+            wrapped = (
+                f"<!-- wp:paragraph -->\n<p>{sentinel}</p>\n<!-- /wp:paragraph -->"
+            )
+            if wrapped in result:
+                result = result.replace(wrapped, block)
+            else:
+                result = result.replace(sentinel, block)
+
+        return result

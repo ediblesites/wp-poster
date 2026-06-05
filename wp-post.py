@@ -56,11 +56,18 @@ class WordPressPost:
             content = f.read()
 
         # Split frontmatter and content
+        line_offset = 0
         if content.startswith('---'):
             parts = content.split('---', 2)
             if len(parts) >= 3:
                 frontmatter = yaml.safe_load(parts[1])
                 markdown_content = parts[2].strip()
+                # Lines consumed by the frontmatter block plus blank
+                # lines stripped from the body, so converter errors can
+                # report file-relative line numbers.
+                consumed = parts[0] + '---' + parts[1] + '---'
+                leading = parts[2][:len(parts[2]) - len(parts[2].lstrip())]
+                line_offset = consumed.count('\n') + leading.count('\n')
             else:
                 frontmatter = {}
                 markdown_content = content
@@ -70,7 +77,7 @@ class WordPressPost:
 
         # Convert markdown to Gutenberg blocks using image handler
         converter = GutenbergConverter(image_handler=self._handle_image)
-        blocks_content = converter.convert(markdown_content)
+        blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 
         return frontmatter, blocks_content
 
@@ -337,7 +344,11 @@ class WordPressPost:
             if verbose:
                 print(f"[verbose] Parsed raw file: {filepath}")
         else:
-            frontmatter, content = self.parse_markdown_file(filepath)
+            try:
+                frontmatter, content = self.parse_markdown_file(filepath)
+            except ValueError as e:
+                print(f"Error: {e} in {filepath}")
+                return None
             if verbose:
                 print(f"[verbose] Parsed and converted markdown: {filepath}")
         
@@ -1444,7 +1455,11 @@ example file:
 
         if fmt == 'markdown':
             print(f"Converting {args.file} to Gutenberg blocks...")
-            frontmatter, content = poster.parse_markdown_file(args.file)
+            try:
+                frontmatter, content = poster.parse_markdown_file(args.file)
+            except ValueError as e:
+                print(f"Error: {e} in {args.file}")
+                sys.exit(1)
 
             print("Frontmatter:")
             print("=" * 40)

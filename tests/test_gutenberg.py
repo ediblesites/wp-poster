@@ -327,3 +327,114 @@ class TestFullDocument:
         result = converter.convert("# Heading\n\nParagraph")
         parts = result.split("\n\n")
         assert len(parts) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Embedded raw Gutenberg blocks (passthrough)
+# ---------------------------------------------------------------------------
+
+class TestEmbeddedGutenberg:
+    def test_simple_block_passes_through_verbatim(self, converter):
+        block = (
+            '<!-- wp:cover {"url":"x.jpg"} -->\n'
+            '<div class="wp-block-cover"><p>Hello</p></div>\n'
+            "<!-- /wp:cover -->"
+        )
+        result = converter.convert(block)
+        assert block in result
+
+    def test_block_between_markdown_paragraphs(self, converter):
+        block = (
+            '<!-- wp:cover {"url":"x.jpg"} -->\n'
+            '<div class="wp-block-cover"><p>Hello</p></div>\n'
+            "<!-- /wp:cover -->"
+        )
+        md = f"Intro text.\n\n{block}\n\nOutro text."
+        result = converter.convert(md)
+        assert block in result
+        assert "<p>Intro text.</p>" in result
+        assert "<p>Outro text.</p>" in result
+        # Order preserved
+        assert result.index("Intro") < result.index("wp:cover") < result.index("Outro")
+
+    def test_nested_blocks_captured_as_one_region(self, converter):
+        block = (
+            "<!-- wp:columns -->\n"
+            '<div class="wp-block-columns">\n'
+            "<!-- wp:column -->\n"
+            '<div class="wp-block-column"><p>Left</p></div>\n'
+            "<!-- /wp:column -->\n"
+            "<!-- wp:column -->\n"
+            '<div class="wp-block-column"><p>Right</p></div>\n'
+            "<!-- /wp:column -->\n"
+            "</div>\n"
+            "<!-- /wp:columns -->"
+        )
+        result = converter.convert(block)
+        assert block in result
+
+    def test_self_closing_block(self, converter):
+        block = '<!-- wp:archives {"showPostCounts":true} /-->'
+        md = f"Before.\n\n{block}\n\nAfter."
+        result = converter.convert(md)
+        assert block in result
+
+    def test_block_with_blank_lines_inside(self, converter):
+        block = (
+            "<!-- wp:group -->\n"
+            '<div class="wp-block-group">\n'
+            "\n"
+            "<p>Spaced content</p>\n"
+            "\n"
+            "</div>\n"
+            "<!-- /wp:group -->"
+        )
+        result = converter.convert(block)
+        assert block in result
+
+    def test_markdown_inside_block_not_processed(self, converter):
+        block = (
+            "<!-- wp:html -->\n"
+            "# not a heading\n"
+            "*not emphasis*\n"
+            "<!-- /wp:html -->"
+        )
+        result = converter.convert(block)
+        assert block in result
+        assert "<h1" not in result
+        assert "<em>" not in result
+
+    def test_unclosed_block_raises_with_line_number(self, converter):
+        import pytest
+
+        md = "Intro.\n\n<!-- wp:cover -->\n<div>oops</div>\n"
+        with pytest.raises(ValueError, match=r"wp:cover.*line 3"):
+            converter.convert(md)
+
+    def test_inline_wp_comment_not_extracted(self, converter):
+        md = "Some text with <!-- wp:cover --> inline mention."
+        result = converter.convert(md)
+        # Falls through to existing behavior (escaped), no passthrough
+        assert "<!-- wp:cover -->" not in result
+
+    def test_multiple_blocks_in_one_document(self, converter):
+        block1 = '<!-- wp:spacer {"height":"50px"} -->\n<div style="height:50px"></div>\n<!-- /wp:spacer -->'
+        block2 = '<!-- wp:archives /-->'
+        md = f"One.\n\n{block1}\n\nTwo.\n\n{block2}\n\nThree."
+        result = converter.convert(md)
+        assert block1 in result
+        assert block2 in result
+        assert result.index(block1) < result.index("Two") < result.index(block2)
+
+    def test_gutenberg_inside_fenced_code_block_stays_code(self, converter):
+        md = (
+            "```html\n"
+            "<!-- wp:cover -->\n"
+            "<div>x</div>\n"
+            "<!-- /wp:cover -->\n"
+            "```"
+        )
+        result = converter.convert(md)
+        assert "wp:code" in result
+        assert "&lt;!-- wp:cover --&gt;" in result
+        assert "<!-- wp:cover -->" not in result

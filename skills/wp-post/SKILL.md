@@ -73,7 +73,31 @@ All images are uploaded to the WordPress media library automatically.
 
 The script re-uploads images on each post, but WordPress itself deduplicates by filename — if a file with the same name already exists in the media library, the upload is ignored and the existing copy is used.
 
-### 5. Automatic id/slug writeback (new posts only)
+### 5. Embedded Gutenberg blocks (markdown mode)
+
+Raw Gutenberg block markup can be embedded directly in markdown, the same way
+HTML can be embedded in markdown. It passes through to WordPress verbatim:
+
+```markdown
+Regular markdown paragraph.
+
+<!-- wp:cover {"url":"https://example.com/bg.jpg"} -->
+<div class="wp-block-cover"><p>Cover content</p></div>
+<!-- /wp:cover -->
+
+More markdown.
+```
+
+- The opening `<!-- wp:... -->` comment must start at the beginning of a line.
+- Nested blocks (`wp:columns`/`wp:column`, `wp:group`) and self-closing blocks
+  (`<!-- wp:archives /-->`) are supported.
+- Content inside the block is not processed: no markdown conversion, no image
+  upload/rewrite. URLs in embedded blocks are the author's responsibility.
+- An unclosed block is a fatal error (reported with its line number); the post
+  is not created.
+- Gutenberg markup inside fenced code blocks is left as code, not extracted.
+
+### 6. Automatic id/slug writeback (new posts only)
 
 When `wp-post` creates a new post (no `id:` in frontmatter), it automatically writes the returned `id` and resolved `slug` back into the file's frontmatter. This prevents duplicate posts on re-run.
 
@@ -81,7 +105,7 @@ No manual action is required. After a successful create, the file is updated in-
 
 If WordPress resolved a slug conflict (e.g. `my-post` → `my-post-2`), the `slug` field is updated to match.
 
-### 6. Translation linking (MSLS multisite)
+### 7. Translation linking (MSLS multisite)
 
 For WordPress multisite networks with MSLS, wp-post can automatically link
 translation siblings.
