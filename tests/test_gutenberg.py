@@ -123,15 +123,29 @@ class TestLists:
         md = "- one\n- two\n- three"
         result = converter.convert(md)
         assert "wp:list" in result
-        assert "<ul>" in result
+        assert '<ul class="wp-block-list">' in result
         assert "<li>one</li>" in result
 
     def test_ordered_list(self, converter):
         md = "1. one\n2. two\n3. three"
         result = converter.convert(md)
         assert '"ordered":true' in result
-        assert "<ol>" in result
+        assert '<ol class="wp-block-list">' in result
         assert "<li>one</li>" in result
+
+    def test_unordered_list_items_are_inner_blocks(self, converter):
+        md = "- one\n- two\n- three"
+        result = converter.convert(md)
+        assert result.count("<!-- wp:list-item -->") == 3
+        assert result.count("<!-- /wp:list-item -->") == 3
+        # Each <li> is wrapped in wp:list-item delimiters
+        assert "<!-- wp:list-item -->\n<li>one</li>\n<!-- /wp:list-item -->" in result
+
+    def test_ordered_list_items_are_inner_blocks(self, converter):
+        md = "1. one\n2. two"
+        result = converter.convert(md)
+        assert result.count("<!-- wp:list-item -->") == 2
+        assert result.count("<!-- /wp:list-item -->") == 2
 
     def test_nested_list(self, converter):
         md = "- parent\n  - child"
@@ -139,6 +153,18 @@ class TestLists:
         assert "wp:list" in result
         assert "parent" in result
         assert "<li>child</li>" in result
+
+    def test_nested_list_structure(self, converter):
+        md = "- parent\n  - child"
+        result = converter.convert(md)
+        # parent li + child li, each a wp:list-item inner block
+        assert result.count("<!-- wp:list-item -->") == 2
+        assert result.count("<!-- /wp:list-item -->") == 2
+        # the child wp:list block nests inside the parent <li>
+        assert result.count("<!-- wp:list -->") == 2
+        inner_list = result.index("<!-- wp:list -->", result.index("<li>"))
+        parent_li_close = result.index("</li>", result.index("<li>"))
+        assert inner_list < parent_li_close, "nested wp:list must open inside parent <li>"
 
     def test_list_with_inline_markdown(self, converter):
         md = "- **bold** item\n- [link](https://example.com)"

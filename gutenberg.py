@@ -102,22 +102,21 @@ class GutenbergRenderer(mistune.HTMLRenderer):
 
     def list(self, text, ordered, **attrs):
         tag = "ol" if ordered else "ul"
-        if ordered:
-            return (
-                f'<!-- wp:list {{"ordered":true}} -->\n'
-                f"<{tag}>\n{text}</{tag}>\n"
-                f"<!-- /wp:list -->\n\n"
-            )
+        block_attrs = ' {"ordered":true}' if ordered else ""
         return (
-            f"<!-- wp:list -->\n"
-            f"<{tag}>\n{text}</{tag}>\n"
+            f"<!-- wp:list{block_attrs} -->\n"
+            f'<{tag} class="wp-block-list">\n{text}</{tag}>\n'
             f"<!-- /wp:list -->\n\n"
         )
 
     def list_item(self, text):
         # Strip wrapping <p> that mistune adds for loose list items
         text = re.sub(r"^<p>(.*)</p>\n?$", r"\1", text.strip(), flags=re.DOTALL)
-        return f"<li>{text}</li>\n"
+        return (
+            f"<!-- wp:list-item -->\n"
+            f"<li>{text}</li>\n"
+            f"<!-- /wp:list-item -->\n"
+        )
 
     # ------------------------------------------------------------------
     # Inline-level overrides
