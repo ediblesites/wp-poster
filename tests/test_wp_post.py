@@ -18,6 +18,7 @@ write_msls_links = wp_post.write_msls_links
 init_network_config = wp_post.init_network_config
 resolve_site_identity = wp_post.resolve_site_identity
 find_site_for_file = wp_post.find_site_for_file
+normalize_yaml_dates = wp_post.normalize_yaml_dates
 
 
 # ===========================================================================
@@ -99,6 +100,69 @@ class TestParseFrontmatterOnly:
         path = md_file({}, "body")
         # yaml.safe_load('') returns None, code coerces to {}
         assert wp.parse_frontmatter_only(path) == {}
+
+
+class TestNormalizeYamlDates:
+    """normalize_yaml_dates coerces datetime.date / datetime.datetime to ISO strings."""
+
+    def test_top_level_date(self):
+        import datetime
+        out = normalize_yaml_dates({"date": datetime.date(2026, 6, 7)})
+        assert out == {"date": "2026-06-07"}
+
+    def test_datetime_keeps_time(self):
+        import datetime
+        out = normalize_yaml_dates({"date": datetime.datetime(2026, 6, 7, 9, 30, 0)})
+        assert out == {"date": "2026-06-07T09:30:00"}
+
+    def test_nested_in_meta(self):
+        import datetime
+        out = normalize_yaml_dates({"meta": {"pricing_verified": datetime.date(2026, 6, 7)}})
+        assert out == {"meta": {"pricing_verified": "2026-06-07"}}
+
+    def test_inside_list(self):
+        import datetime
+        out = normalize_yaml_dates({"meta": {"checks": [datetime.date(2026, 6, 7), "x"]}})
+        assert out == {"meta": {"checks": ["2026-06-07", "x"]}}
+
+    def test_non_dates_unchanged(self):
+        out = normalize_yaml_dates({"a": 1, "b": "two", "c": [1, 2], "d": None})
+        assert out == {"a": 1, "b": "two", "c": [1, 2], "d": None}
+
+    def test_none_passthrough(self):
+        assert normalize_yaml_dates(None) is None
+
+
+class TestUnquotedDatesAreSerializable:
+    """Unquoted YAML dates anywhere in frontmatter survive json.dumps (issue #9)."""
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unquoted_date_in_meta(self, mock_get, mock_post, wp, tmp_path, mock_response):
+        # Write raw frontmatter with an unquoted ISO date in a meta field.
+        content = (
+            "---\n"
+            "title: T\n"
+            "date: 2026-06-07\n"
+            "meta:\n"
+            "  pricing_verified: 2026-06-07\n"
+            "---\n"
+            "body"
+        )
+        path = tmp_path / "post.md"
+        path.write_text(content, encoding="utf-8")
+        mock_post.return_value = mock_response(201, {
+            "id": 1, "link": "https://example.com/?p=1",
+            "title": {"rendered": "T"},
+        })
+
+        wp.post_to_wordpress(str(path), raw=True)
+        post_data = mock_post.call_args[1]["json"]
+
+        # The payload must be JSON-serializable (the original crash).
+        json.dumps(post_data)
+        assert post_data["date"] == "2026-06-07"
+        assert post_data["meta"]["pricing_verified"] == "2026-06-07"
 
 
 class TestParseRawFile:

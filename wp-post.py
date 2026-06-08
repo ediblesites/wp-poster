@@ -24,10 +24,32 @@ _session = requests.Session()
 _session.headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 requests.get = _session.get
 requests.post = _session.post
-from datetime import datetime
+from datetime import date
 import getpass
 
 from gutenberg import GutenbergConverter
+
+
+def normalize_yaml_dates(value):
+    """Recursively coerce datetime.date / datetime.datetime values to ISO strings.
+
+    yaml.safe_load() resolves unquoted ISO dates (e.g. `pricing_verified: 2026-06-07`)
+    to date/datetime objects, which json.dumps() (used for the WP REST payload) cannot
+    serialize. Normalizing once, right after parsing frontmatter, lets authors write
+    natural unquoted dates anywhere in frontmatter. See issue #9.
+    """
+    if isinstance(value, dict):
+        return {k: normalize_yaml_dates(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_yaml_dates(v) for v in value]
+    if isinstance(value, date):  # datetime is a subclass of date
+        return value.isoformat()
+    return value
+
+
+def load_frontmatter(yaml_text):
+    """Parse a frontmatter YAML block and normalize date values (issue #9)."""
+    return normalize_yaml_dates(yaml.safe_load(yaml_text))
 
 
 class WordPressPost:
@@ -47,7 +69,7 @@ class WordPressPost:
         if content.startswith('---'):
             parts = content.split('---', 2)
             if len(parts) >= 3:
-                return yaml.safe_load(parts[1]) or {}
+                return load_frontmatter(parts[1]) or {}
         return {}
 
     def parse_markdown_file(self, filepath):
@@ -60,7 +82,7 @@ class WordPressPost:
         if content.startswith('---'):
             parts = content.split('---', 2)
             if len(parts) >= 3:
-                frontmatter = yaml.safe_load(parts[1])
+                frontmatter = load_frontmatter(parts[1])
                 markdown_content = parts[2].strip()
                 # Lines consumed by the frontmatter block plus blank
                 # lines stripped from the body, so converter errors can
@@ -94,7 +116,7 @@ class WordPressPost:
         if content.startswith('---'):
             parts = content.split('---', 2)
             if len(parts) >= 3:
-                frontmatter = yaml.safe_load(parts[1])
+                frontmatter = load_frontmatter(parts[1])
                 raw_content = parts[2].strip()
             else:
                 frontmatter = {}
@@ -257,7 +279,7 @@ class WordPressPost:
         if len(parts) < 3:
             return
 
-        fm = yaml.safe_load(parts[1]) or {}
+        fm = load_frontmatter(parts[1]) or {}
         fm['id'] = post_id
 
         # Extract slug from URL: last non-empty path segment
@@ -382,12 +404,9 @@ class WordPressPost:
             'excerpt': frontmatter.get('excerpt', ''),
         }
         
-        # Handle date
+        # Handle date (already normalized to an ISO string by load_frontmatter)
         if 'date' in frontmatter:
-            if isinstance(frontmatter['date'], datetime):
-                post_data['date'] = frontmatter['date'].isoformat()
-            else:
-                post_data['date'] = frontmatter['date']
+            post_data['date'] = frontmatter['date']
 
         # Handle template (for pages and hierarchical post types)
         if 'template' in frontmatter:
@@ -916,7 +935,7 @@ def find_translation_siblings(project_root, network_config, translation_set, exc
                 parts = file_content.split('---', 2)
                 if len(parts) < 3:
                     continue
-                fm = yaml.safe_load(parts[1]) or {}
+                fm = load_frontmatter(parts[1]) or {}
                 if fm.get('translation_set') == translation_set and 'id' in fm:
                     siblings.append({
                         'locale': site_locale,
