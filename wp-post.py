@@ -9,12 +9,14 @@ warnings.filterwarnings("ignore", message="urllib3")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import argparse
+import base64
 import glob as glob_mod
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
@@ -301,7 +303,12 @@ class WordPressPost:
         print(f"✓ Wrote id and slug back to {filepath}")
 
     def link_msls_translations(self, filepath, frontmatter, post_id, verbose=False):
-        """After creating a new post with translation_set, write MSLS links."""
+        """Write (and re-assert) MSLS links for a post with a translation_set.
+
+        Runs on every publish - create and update - so a previously failed or
+        drifted link write self-heals on the next run (issue #12). Returns the
+        list of failed members (empty when all succeed), or None when linking
+        does not apply (no translation_set / not a network project)."""
         translation_set = frontmatter.get('translation_set')
         if not translation_set:
             return
@@ -534,11 +541,16 @@ class WordPressPost:
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
 
-            # Writeback id/slug and MSLS translation linking (new posts only)
-            msls_failures = []
+            # Writeback id/slug (new posts only)
             if 'id' not in frontmatter:
                 self._writeback_frontmatter(filepath, post_id, post['link'])
-                msls_failures = self.link_msls_translations(filepath, frontmatter, post_id, verbose=verbose) or []
+
+            # MSLS translation linking runs on every publish (create + update)
+            # so a failed or drifted link write self-heals on the next run
+            # instead of needing manual remediation (issue #12). Cheap to skip
+            # for non-translation posts: link_msls_translations early-returns
+            # when there is no translation_set / network config.
+            msls_failures = self.link_msls_translations(filepath, frontmatter, post_id, verbose=verbose) or []
 
             result = {
                 'success': True,
@@ -1010,14 +1022,52 @@ def find_translation_siblings(project_root, network_config, translation_set, exc
     return siblings
 
 
+# Each member's link write is attempted up to this many times, sleeping
+# _MSLS_BACKOFF[attempt-1] seconds before each retry, so a transient transport
+# failure (SSH blip, timeout) self-heals in-run rather than needing a re-run.
+_MSLS_MAX_ATTEMPTS = 3
+_MSLS_BACKOFF = [1, 2]
+
+
+def _msls_eval_command(wp_cli_alias, blog_id, post_id, others):
+    """Build the combined write-and-verify wp eval for one translation member.
+
+    The payload is passed base64-encoded so any character in it (quotes,
+    apostrophes, unicode) cannot break the PHP string. The same eval writes the
+    option and echoes the stored value back via wp_json_encode, so the caller
+    can confirm the write actually took effect without a second round-trip.
+    """
+    payload_b64 = base64.b64encode(json.dumps(others).encode()).decode()
+    script = (
+        f'switch_to_blog({blog_id}); '
+        f'update_option("msls_{post_id}", json_decode(base64_decode("{payload_b64}"), true)); '
+        f'echo wp_json_encode(get_option("msls_{post_id}")); '
+        f'restore_current_blog();'
+    )
+    return ['wp', wp_cli_alias, 'eval', script]
+
+
+def _normalize_msls_map(raw):
+    """Normalize a decoded msls option to {locale_str: post_id_int} for comparison.
+
+    PHP/JSON round-trips may hand back string post ids or encode an empty map as
+    a JSON array; normalize both so equality checks are type-stable.
+    """
+    if isinstance(raw, dict):
+        return {str(k): int(v) for k, v in raw.items()}
+    return {}  # empty PHP array encodes as [], or any non-object
+
+
 def write_msls_links(wp_cli_alias, current_post, siblings):
-    """Write MSLS options for all members of a translation set.
+    """Write and verify MSLS options for all members of a translation set.
 
     current_post: {"locale": "en_US", "blog_id": 1, "post_id": 4773}
     siblings: [{"locale": "es_ES", "blog_id": 2, "post_id": 266}, ...]
 
-    Returns a per-member status list so the caller can report partial failures
-    instead of treating every outcome as success (issue #11):
+    For each member the option is written and immediately read back; the write
+    is retried on transient failure and only reported ok once the stored value
+    matches what we intended to write (issue #12). Returns a per-member status
+    list (issue #11):
         [{"locale", "post_id", "ok": bool, "error": str | None}, ...]
     A failure on one member does not abort writes for the others.
     """
@@ -1025,29 +1075,45 @@ def write_msls_links(wp_cli_alias, current_post, siblings):
     results = []
 
     for member in all_members:
-        # Build this member's msls option: all OTHER members
+        # This member's msls option is the mesh of all OTHER members.
         others = {m['locale']: m['post_id'] for m in all_members if m != member}
-        option_value = json.dumps(others)
-
-        cmd = [
-            'wp', wp_cli_alias, 'eval',
-            f'switch_to_blog({member["blog_id"]}); '
-            f'update_option("msls_{member["post_id"]}", json_decode(\'{option_value}\', true)); '
-            f'restore_current_blog();'
-        ]
+        expected = _normalize_msls_map(others)
+        cmd = _msls_eval_command(wp_cli_alias, member['blog_id'], member['post_id'], others)
 
         status = {'locale': member['locale'], 'post_id': member['post_id'], 'ok': False, 'error': None}
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-            if result.returncode == 0:
-                status['ok'] = True
-            else:
+        last_error = None
+        for attempt in range(_MSLS_MAX_ATTEMPTS):
+            if attempt > 0:
+                time.sleep(_MSLS_BACKOFF[attempt - 1])
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            except FileNotFoundError:
+                # wp-cli absent: cannot self-heal within this run, so fail fast.
+                last_error = "wp-cli not found / alias misconfigured (is `wp` on PATH?)"
+                break
+            except subprocess.TimeoutExpired:
+                last_error = "wp eval timed out after 15s"
+                continue
+
+            if result.returncode != 0:
                 detail = (result.stderr or result.stdout or '').strip()
-                status['error'] = f"wp eval exited {result.returncode}" + (f": {detail}" if detail else "")
-        except FileNotFoundError:
-            status['error'] = "wp-cli not found / alias misconfigured (is `wp` on PATH?)"
-        except subprocess.TimeoutExpired:
-            status['error'] = "wp eval timed out after 15s"
+                last_error = f"wp eval exited {result.returncode}" + (f": {detail}" if detail else "")
+                continue
+
+            # Read-back verification: confirm the option actually persisted.
+            try:
+                got = _normalize_msls_map(json.loads(result.stdout))
+            except (ValueError, TypeError):
+                last_error = f"could not parse read-back output: {result.stdout.strip()!r}"
+                continue
+            if got == expected:
+                status['ok'] = True
+                last_error = None
+                break
+            last_error = f"read-back mismatch: expected {expected}, got {got}"
+
+        if not status['ok']:
+            status['error'] = last_error
         results.append(status)
 
     return results

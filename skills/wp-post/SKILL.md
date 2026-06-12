@@ -119,12 +119,17 @@ translation_set: about-us
 ---
 ```
 
-On creating a new post, wp-post checks if siblings with the same
-`translation_set` exist on other sites (and have been published with an `id`).
-If so, it writes the MSLS options to link all members.
+On every publish, wp-post checks if siblings with the same `translation_set`
+exist on other sites (and have been published with an `id`). If so, it writes
+the MSLS options to link all members and reads each one back to confirm it
+persisted.
 
 - `translation_set` is opt-in. Posts without it are standalone.
-- Linking only happens on create, not update.
+- Linking runs on every publish (create and update) and is idempotent, so a
+  failed or drifted link write self-heals on the next publish - no manual fix.
+- Each write is retried on transient failure; if a member still can't be linked
+  the failure is reported (`msls_failures` in the JSON output) and `wp-post`
+  exits non-zero, so automation notices instead of silently losing links.
 - The first post in a set has nothing to link — linking occurs when the
   second (or later) sibling is published.
 

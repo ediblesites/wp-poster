@@ -1,7 +1,9 @@
 """Tests for wp-post.py — WordPressPost class and standalone functions."""
 
+import base64
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -19,6 +21,22 @@ init_network_config = wp_post.init_network_config
 resolve_site_identity = wp_post.resolve_site_identity
 find_site_for_file = wp_post.find_site_for_file
 normalize_yaml_dates = wp_post.normalize_yaml_dates
+
+
+def _msls_eval_echo(returncode=0):
+    """Build a subprocess.run side_effect that simulates a wp-cli MSLS eval.
+
+    The real combined eval writes the base64 payload then echoes back the
+    stored option via wp_json_encode. This fake decodes that same payload from
+    the command and returns it as stdout, so a successful write reads back as
+    exactly what was written (read-back verification passes).
+    """
+    def _run(cmd, *args, **kwargs):
+        script = cmd[3]
+        m = re.search(r'base64_decode\("([^"]+)"\)', script)
+        stdout = base64.b64decode(m.group(1)).decode() if m else ""
+        return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+    return _run
 
 
 # ===========================================================================
@@ -968,29 +986,37 @@ class TestFindTranslationSiblings:
         assert len(siblings) == 0
 
 
+def _decode_msls_payload(script):
+    """Decode the base64 option payload out of an MSLS eval command string."""
+    b64 = re.search(r'base64_decode\("([^"]+)"\)', script).group(1)
+    return json.loads(base64.b64decode(b64).decode())
+
+
 class TestWriteMslsLinks:
     @patch("wp_post.subprocess.run")
     def test_two_member_set(self, mock_run):
+        mock_run.side_effect = _msls_eval_echo()
         current = {'locale': 'en_US', 'blog_id': 1, 'post_id': 10}
         siblings = [{'locale': 'es_ES', 'blog_id': 2, 'post_id': 20}]
 
         write_msls_links('@test', current, siblings)
 
         assert mock_run.call_count == 2
-        # Check that both members get an option written
+        # Check that both members get an option written (payload is base64-encoded)
         calls = mock_run.call_args_list
-        cmd0 = calls[0][0][0]  # first call args
-        cmd1 = calls[1][0][0]
+        cmd0 = calls[0][0][0][3]  # first call's eval script
+        cmd1 = calls[1][0][0][3]
 
         # en member should get es sibling
-        assert 'msls_10' in cmd0[3]
-        assert '"es_ES": 20' in cmd0[3]
+        assert 'msls_10' in cmd0
+        assert _decode_msls_payload(cmd0) == {'es_ES': 20}
         # es member should get en sibling
-        assert 'msls_20' in cmd1[3]
-        assert '"en_US": 10' in cmd1[3]
+        assert 'msls_20' in cmd1
+        assert _decode_msls_payload(cmd1) == {'en_US': 10}
 
     @patch("wp_post.subprocess.run")
     def test_three_member_set(self, mock_run):
+        mock_run.side_effect = _msls_eval_echo()
         current = {'locale': 'en_US', 'blog_id': 1, 'post_id': 10}
         siblings = [
             {'locale': 'es_ES', 'blog_id': 2, 'post_id': 20},
@@ -1002,11 +1028,12 @@ class TestWriteMslsLinks:
         assert mock_run.call_count == 3
         # Each member should list the other two
         for i, member in enumerate([current] + siblings):
-            cmd = mock_run.call_args_list[i][0][0]
-            assert f'msls_{member["post_id"]}' in cmd[3]
+            cmd = mock_run.call_args_list[i][0][0][3]
+            assert f'msls_{member["post_id"]}' in cmd
 
     @patch("wp_post.subprocess.run")
     def test_mesh_includes_all_members(self, mock_run):
+        mock_run.side_effect = _msls_eval_echo()
         current = {'locale': 'en_US', 'blog_id': 1, 'post_id': 10}
         siblings = [{'locale': 'es_ES', 'blog_id': 2, 'post_id': 20}]
 
@@ -1037,6 +1064,7 @@ class TestMslsIntegration:
         new_post.write_text('---\ntitle: About\ntranslation_set: about\n---\nContent', encoding='utf-8')
 
         wp = WordPressPost('https://en.example.com', 'admin', 'pass')
+        mock_subproc.side_effect = _msls_eval_echo()
         mock_post.return_value = mock_response(201, {
             'id': 50, 'link': 'https://en.example.com/about/', 'title': {'rendered': 'About'},
         })
@@ -1050,7 +1078,9 @@ class TestMslsIntegration:
     @patch("wp_post.subprocess.run")
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_no_msls_linking_on_update(self, mock_get, mock_post, mock_subproc, tmp_path, mock_response):
+    def test_msls_linking_reasserts_on_update(self, mock_get, mock_post, mock_subproc, tmp_path, mock_response):
+        """MSLS links are re-asserted on update too (issue #12), so a failed or
+        drifted link write self-heals on the next publish - no manual fix."""
         sites = [
             {'key': 'en', 'site_url': 'https://en.example.com', 'locale': 'en_US', 'blog_id': 1},
             {'key': 'es', 'site_url': 'https://es.example.com', 'locale': 'es_ES', 'blog_id': 2},
@@ -1065,12 +1095,16 @@ class TestMslsIntegration:
         update_post.write_text('---\ntitle: About\nid: 50\ntranslation_set: about\n---\nContent', encoding='utf-8')
 
         wp = WordPressPost('https://en.example.com', 'admin', 'pass')
+        mock_subproc.side_effect = _msls_eval_echo()
         mock_post.return_value = mock_response(200, {
             'id': 50, 'link': 'https://en.example.com/about/', 'title': {'rendered': 'About'},
         })
 
-        wp.post_to_wordpress(str(update_post), raw=True)
-        mock_subproc.assert_not_called()
+        result = wp.post_to_wordpress(str(update_post), raw=True)
+
+        assert result['success'] is True
+        # Linking ran on update (2 members), not skipped
+        assert mock_subproc.call_count == 2
 
     @patch("wp_post.subprocess.run")
     @patch("wp_post.requests.post")
@@ -1604,7 +1638,8 @@ class TestSameHostMediaReuse:
 class TestWriteMslsLinksResult:
     @patch("wp_post.subprocess.run")
     def test_returns_ok_status_for_each_member(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        # Each eval writes then echoes back the stored value; read-back matches.
+        mock_run.side_effect = _msls_eval_echo()
         current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
         siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
 
@@ -1615,12 +1650,33 @@ class TestWriteMslsLinksResult:
         assert all(r["error"] is None for r in results)
 
     @patch("wp_post.subprocess.run")
-    def test_nonzero_returncode_marks_member_failed(self, mock_run):
-        # en member succeeds, es member's wp eval exits non-zero
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stderr=""),
-            MagicMock(returncode=1, stderr="Error: Site 2 not found"),
-        ]
+    def test_payload_is_base64_encoded(self, mock_run):
+        """The option payload is passed base64-encoded (not raw single-quoted
+        PHP), so special characters cannot break the eval."""
+        mock_run.side_effect = _msls_eval_echo()
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        write_msls_links("@test", current, siblings)
+
+        en_script = mock_run.call_args_list[0][0][0][3]
+        assert "base64_decode(" in en_script
+        # The raw JSON payload must not appear in the command verbatim
+        assert '"es_ES": 20' not in en_script
+        b64 = re.search(r'base64_decode\("([^"]+)"\)', en_script).group(1)
+        assert json.loads(base64.b64decode(b64).decode()) == {"es_ES": 20}
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.subprocess.run")
+    def test_nonzero_returncode_marks_member_failed(self, mock_run, mock_sleep):
+        # en member succeeds; es member's wp eval exits non-zero on every attempt
+        def _run(cmd, *a, **k):
+            script = cmd[3]
+            if "msls_20" in script:
+                return MagicMock(returncode=1, stdout="", stderr="Error: Site 2 not found")
+            m = re.search(r'base64_decode\("([^"]+)"\)', script)
+            return MagicMock(returncode=0, stdout=base64.b64decode(m.group(1)).decode(), stderr="")
+        mock_run.side_effect = _run
         current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
         siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
 
@@ -1630,11 +1686,58 @@ class TestWriteMslsLinksResult:
         assert by_locale["en_US"]["ok"] is True
         assert by_locale["es_ES"]["ok"] is False
         assert "Site 2 not found" in by_locale["es_ES"]["error"]
-        # The loop did not abort on the first failure
-        assert mock_run.call_count == 2
+        # en linked once; es retried up to 3 attempts before giving up
+        assert mock_run.call_count == 1 + 3
 
+    @patch("wp_post.time.sleep")
     @patch("wp_post.subprocess.run")
-    def test_missing_wp_cli_is_reported_not_raised(self, mock_run):
+    def test_readback_mismatch_marks_member_failed(self, mock_run, mock_sleep):
+        """Exit 0 but the stored value doesn't match what we wrote -> failure."""
+        # Always exit 0 but echo back the wrong map for the es member
+        def _run(cmd, *a, **k):
+            script = cmd[3]
+            if "msls_20" in script:
+                return MagicMock(returncode=0, stdout="{}", stderr="")
+            m = re.search(r'base64_decode\("([^"]+)"\)', script)
+            return MagicMock(returncode=0, stdout=base64.b64decode(m.group(1)).decode(), stderr="")
+        mock_run.side_effect = _run
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        results = write_msls_links("@test", current, siblings)
+
+        by_locale = {r["locale"]: r for r in results}
+        assert by_locale["en_US"]["ok"] is True
+        assert by_locale["es_ES"]["ok"] is False
+        assert "mismatch" in by_locale["es_ES"]["error"].lower()
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.subprocess.run")
+    def test_retry_recovers_after_transient_failure(self, mock_run, mock_sleep):
+        """A member that fails once then succeeds is reported ok (self-heals)."""
+        state = {"es_failed_once": False}
+
+        def _run(cmd, *a, **k):
+            script = cmd[3]
+            m = re.search(r'base64_decode\("([^"]+)"\)', script)
+            payload = base64.b64decode(m.group(1)).decode()
+            if "msls_20" in script and not state["es_failed_once"]:
+                state["es_failed_once"] = True
+                return MagicMock(returncode=1, stdout="", stderr="transient blip")
+            return MagicMock(returncode=0, stdout=payload, stderr="")
+        mock_run.side_effect = _run
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        results = write_msls_links("@test", current, siblings)
+
+        assert all(r["ok"] for r in results)
+        # Backoff slept at least once before the successful retry
+        assert mock_sleep.call_count >= 1
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.subprocess.run")
+    def test_missing_wp_cli_fails_fast_without_retry(self, mock_run, mock_sleep):
         mock_run.side_effect = FileNotFoundError("wp")
         current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
         siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
@@ -1644,9 +1747,13 @@ class TestWriteMslsLinksResult:
 
         assert all(r["ok"] is False for r in results)
         assert all("wp-cli" in r["error"].lower() for r in results)
+        # Fail fast: one attempt per member, no retries (can't self-heal in-run)
+        assert mock_run.call_count == 2
+        mock_sleep.assert_not_called()
 
+    @patch("wp_post.time.sleep")
     @patch("wp_post.subprocess.run")
-    def test_timeout_is_reported_not_raised(self, mock_run):
+    def test_timeout_is_retried_then_reported(self, mock_run, mock_sleep):
         import subprocess
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="wp", timeout=15)
         current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
@@ -1656,14 +1763,17 @@ class TestWriteMslsLinksResult:
 
         assert all(r["ok"] is False for r in results)
         assert all("time" in r["error"].lower() for r in results)
+        # Each member retried up to 3 attempts
+        assert mock_run.call_count == 2 * 3
 
 
 class TestMslsFailureSurfacing:
+    @patch("wp_post.time.sleep")
     @patch("wp_post.subprocess.run")
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
     def test_failure_not_reported_as_success(
-        self, mock_get, mock_post, mock_subproc, tmp_path, mock_response, capsys
+        self, mock_get, mock_post, mock_subproc, mock_sleep, tmp_path, mock_response, capsys
     ):
         """A non-zero MSLS write must not print the success line, and the failure
         must be surfaced on the publish result (post still succeeds - it is live)."""
@@ -1680,7 +1790,7 @@ class TestMslsFailureSurfacing:
         mock_post.return_value = mock_response(201, {
             "id": 50, "link": "https://en.example.com/about/", "title": {"rendered": "About"},
         })
-        mock_subproc.return_value = MagicMock(returncode=1, stderr="boom")
+        mock_subproc.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
 
         result = wp.post_to_wordpress(str(new_post), raw=True)
         out = capsys.readouterr().out
@@ -1711,7 +1821,7 @@ class TestMslsFailureSurfacing:
         mock_post.return_value = mock_response(201, {
             "id": 50, "link": "https://en.example.com/about/", "title": {"rendered": "About"},
         })
-        mock_subproc.return_value = MagicMock(returncode=0, stderr="")
+        mock_subproc.side_effect = _msls_eval_echo()
 
         result = wp.post_to_wordpress(str(new_post), raw=True)
         out = capsys.readouterr().out
