@@ -1590,3 +1590,184 @@ class TestSameHostMediaReuse:
         # No resolver/dedup query for a foreign host
         for c in mock_get.call_args_list:
             assert "/wp-json/wp/v2/media" not in c[0][0]
+
+
+# ===========================================================================
+# MSLS link write result handling (issue #11)
+# ===========================================================================
+#
+# write_msls_links used to discard the subprocess result, so a failed MSLS
+# write (non-zero exit, missing wp-cli, timeout) was either swallowed as
+# success or crashed the whole publish. It now returns a per-member status
+# list and the caller surfaces failures instead of printing a blanket success.
+
+class TestWriteMslsLinksResult:
+    @patch("wp_post.subprocess.run")
+    def test_returns_ok_status_for_each_member(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        results = write_msls_links("@test", current, siblings)
+
+        assert {r["locale"] for r in results} == {"en_US", "es_ES"}
+        assert all(r["ok"] for r in results)
+        assert all(r["error"] is None for r in results)
+
+    @patch("wp_post.subprocess.run")
+    def test_nonzero_returncode_marks_member_failed(self, mock_run):
+        # en member succeeds, es member's wp eval exits non-zero
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),
+            MagicMock(returncode=1, stderr="Error: Site 2 not found"),
+        ]
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        results = write_msls_links("@test", current, siblings)
+
+        by_locale = {r["locale"]: r for r in results}
+        assert by_locale["en_US"]["ok"] is True
+        assert by_locale["es_ES"]["ok"] is False
+        assert "Site 2 not found" in by_locale["es_ES"]["error"]
+        # The loop did not abort on the first failure
+        assert mock_run.call_count == 2
+
+    @patch("wp_post.subprocess.run")
+    def test_missing_wp_cli_is_reported_not_raised(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("wp")
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        # Must not raise - the failure is captured per member
+        results = write_msls_links("@test", current, siblings)
+
+        assert all(r["ok"] is False for r in results)
+        assert all("wp-cli" in r["error"].lower() for r in results)
+
+    @patch("wp_post.subprocess.run")
+    def test_timeout_is_reported_not_raised(self, mock_run):
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="wp", timeout=15)
+        current = {"locale": "en_US", "blog_id": 1, "post_id": 10}
+        siblings = [{"locale": "es_ES", "blog_id": 2, "post_id": 20}]
+
+        results = write_msls_links("@test", current, siblings)
+
+        assert all(r["ok"] is False for r in results)
+        assert all("time" in r["error"].lower() for r in results)
+
+
+class TestMslsFailureSurfacing:
+    @patch("wp_post.subprocess.run")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_failure_not_reported_as_success(
+        self, mock_get, mock_post, mock_subproc, tmp_path, mock_response, capsys
+    ):
+        """A non-zero MSLS write must not print the success line, and the failure
+        must be surfaced on the publish result (post still succeeds - it is live)."""
+        sites = [
+            {"key": "en", "site_url": "https://en.example.com", "locale": "en_US", "blog_id": 1},
+            {"key": "es", "site_url": "https://es.example.com", "locale": "es_ES", "blog_id": 2},
+        ]
+        ts = [{"site_key": "es", "frontmatter": {"title": "Sobre", "id": 100, "translation_set": "about"}}]
+        root = _scaffold_network(tmp_path, sites, ts)
+        new_post = root / "en" / "content" / "index.md"
+        new_post.write_text("---\ntitle: About\ntranslation_set: about\n---\nContent", encoding="utf-8")
+
+        wp = WordPressPost("https://en.example.com", "admin", "pass")
+        mock_post.return_value = mock_response(201, {
+            "id": 50, "link": "https://en.example.com/about/", "title": {"rendered": "About"},
+        })
+        mock_subproc.return_value = MagicMock(returncode=1, stderr="boom")
+
+        result = wp.post_to_wordpress(str(new_post), raw=True)
+        out = capsys.readouterr().out
+
+        # Post itself still succeeded (already created in WP)
+        assert result["success"] is True
+        # But the MSLS failure is surfaced, not masked as success
+        assert "✓ MSLS translation links written" not in out
+        assert result.get("msls_failures")
+
+    @patch("wp_post.subprocess.run")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_success_still_reports_clean(
+        self, mock_get, mock_post, mock_subproc, tmp_path, mock_response, capsys
+    ):
+        """The happy path is unchanged: all members succeed -> success line, no failures."""
+        sites = [
+            {"key": "en", "site_url": "https://en.example.com", "locale": "en_US", "blog_id": 1},
+            {"key": "es", "site_url": "https://es.example.com", "locale": "es_ES", "blog_id": 2},
+        ]
+        ts = [{"site_key": "es", "frontmatter": {"title": "Sobre", "id": 100, "translation_set": "about"}}]
+        root = _scaffold_network(tmp_path, sites, ts)
+        new_post = root / "en" / "content" / "index.md"
+        new_post.write_text("---\ntitle: About\ntranslation_set: about\n---\nContent", encoding="utf-8")
+
+        wp = WordPressPost("https://en.example.com", "admin", "pass")
+        mock_post.return_value = mock_response(201, {
+            "id": 50, "link": "https://en.example.com/about/", "title": {"rendered": "About"},
+        })
+        mock_subproc.return_value = MagicMock(returncode=0, stderr="")
+
+        result = wp.post_to_wordpress(str(new_post), raw=True)
+        out = capsys.readouterr().out
+
+        assert result["success"] is True
+        assert "✓ MSLS translation links written" in out
+        assert not result.get("msls_failures")
+
+
+class TestMainMslsExit:
+    """main() must reflect MSLS failures in its machine-readable output and exit
+    code - the surface that stayed silent in the incident (issue #11)."""
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_msls_failure_exits_nonzero_and_reports(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 50, "url": "https://example.com/p/", "title": "T",
+            "msls_failures": [{"locale": "es_ES", "post_id": 20, "ok": False, "error": "boom"}],
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload.get("msls_failures")
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_clean_publish_exits_zero(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 50, "url": "https://example.com/p/", "title": "T",
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            # Clean success falls through main() without sys.exit -> returns None
+            wp_post.main()
+
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["success"] is True
+        assert "msls_failures" not in payload

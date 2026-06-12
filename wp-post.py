@@ -341,10 +341,20 @@ class WordPressPost:
         }
 
         wp_cli_alias = network_config.get('network', {}).get('wp_cli_alias', '')
+        total = len(siblings) + 1
         if verbose:
-            print(f"[verbose] Writing MSLS links for {len(siblings) + 1} members")
-        write_msls_links(wp_cli_alias, current_post, siblings)
-        print(f"✓ MSLS translation links written ({len(siblings) + 1} members)")
+            print(f"[verbose] Writing MSLS links for {total} members")
+
+        results = write_msls_links(wp_cli_alias, current_post, siblings)
+        failures = [r for r in results if not r['ok']]
+        if failures:
+            print(f"✗ MSLS translation linking failed for {len(failures)}/{total} members:")
+            for f in failures:
+                print(f"    - {f['locale']} (post {f['post_id']}): {f['error']}")
+            return failures
+
+        print(f"✓ MSLS translation links written ({total} members)")
+        return []
 
     def post_to_wordpress(self, filepath, draft=False, raw=False, author_context=None, verbose=False):
         """Post file to WordPress.
@@ -525,16 +535,22 @@ class WordPressPost:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
 
             # Writeback id/slug and MSLS translation linking (new posts only)
+            msls_failures = []
             if 'id' not in frontmatter:
                 self._writeback_frontmatter(filepath, post_id, post['link'])
-                self.link_msls_translations(filepath, frontmatter, post_id, verbose=verbose)
+                msls_failures = self.link_msls_translations(filepath, frontmatter, post_id, verbose=verbose) or []
 
-            return {
+            result = {
                 'success': True,
                 'id': post_id,
                 'url': post['link'],
                 'title': post['title']['rendered']
             }
+            # The post is already live; MSLS linking failures are surfaced
+            # separately so they aren't masked as a clean success (issue #11).
+            if msls_failures:
+                result['msls_failures'] = msls_failures
+            return result
         else:
             error_msg = response.text
             # Check for author permission error
@@ -999,8 +1015,14 @@ def write_msls_links(wp_cli_alias, current_post, siblings):
 
     current_post: {"locale": "en_US", "blog_id": 1, "post_id": 4773}
     siblings: [{"locale": "es_ES", "blog_id": 2, "post_id": 266}, ...]
+
+    Returns a per-member status list so the caller can report partial failures
+    instead of treating every outcome as success (issue #11):
+        [{"locale", "post_id", "ok": bool, "error": str | None}, ...]
+    A failure on one member does not abort writes for the others.
     """
     all_members = [current_post] + siblings
+    results = []
 
     for member in all_members:
         # Build this member's msls option: all OTHER members
@@ -1013,7 +1035,22 @@ def write_msls_links(wp_cli_alias, current_post, siblings):
             f'update_option("msls_{member["post_id"]}", json_decode(\'{option_value}\', true)); '
             f'restore_current_blog();'
         ]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+        status = {'locale': member['locale'], 'post_id': member['post_id'], 'ok': False, 'error': None}
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode == 0:
+                status['ok'] = True
+            else:
+                detail = (result.stderr or result.stdout or '').strip()
+                status['error'] = f"wp eval exited {result.returncode}" + (f": {detail}" if detail else "")
+        except FileNotFoundError:
+            status['error'] = "wp-cli not found / alias misconfigured (is `wp` on PATH?)"
+        except subprocess.TimeoutExpired:
+            status['error'] = "wp eval timed out after 15s"
+        results.append(status)
+
+    return results
 
 
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
@@ -1645,12 +1682,21 @@ example file:
         sys.exit(1)
 
     if result['success']:
-        print(json.dumps({
+        summary = {
             'success': True,
             'id': result['id'],
             'title': result['title'],
             'url': result['url']
-        }))
+        }
+        # The post is live, but MSLS translation links failed to write. Surface
+        # it in the machine-readable output and exit non-zero so automation
+        # notices instead of treating the publish as fully complete (issue #11).
+        msls_failures = result.get('msls_failures')
+        if msls_failures:
+            summary['msls_failures'] = msls_failures
+            print(json.dumps(summary))
+            sys.exit(1)
+        print(json.dumps(summary))
     else:
         print(json.dumps({
             'success': False,
