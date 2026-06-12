@@ -194,7 +194,7 @@ Inline images in the post body are uploaded and their URLs are rewritten to poin
 | Syntax                            | Behavior                                          |
 |-----------------------------------|---------------------------------------------------|
 | `![alt](local.jpg)`              | Local file uploaded to media library               |
-| `![alt](https://example.com/img)`| Remote URL downloaded and re-uploaded              |
+| `![alt](https://example.com/img)`| Remote URL downloaded and re-uploaded (unless already on this site - see below) |
 | `![alt](url "caption text")`     | Caption becomes a `<figcaption>` on the image block|
 | `<figure><img src="..."></figure>`| HTML image tags also detected and uploaded         |
 | `<img src="...">`                | Standalone img tags handled the same way           |
@@ -213,8 +213,10 @@ Each article publishes its media into a per-article namespace in the WordPress m
 
 The lookup uses `GET /wp/v2/media?slug=<scope>-<basename>` and verifies that a candidate's `source_url` ends with the exact scoped filename, so a `foo.jpg` upload will not be confused with an existing `foo.png`. Cross-article filename collisions are impossible because the scope is part of the slug.
 
+**Images already hosted on this site:** when an image URL's host matches the target site, the script skips the download/upload entirely and resolves the existing attachment by exact `source_url` match (`GET /wp/v2/media?slug=<basename>`). This applies regardless of article scope, so referencing a WordPress media URL directly in your markdown reuses the existing attachment instead of duplicating it. A same-basename image at a different upload path is not aliased; if no attachment matches exactly, it falls back to the normal download/upload path.
+
 **Caveats:**
-- Each article gets its own copy of every image, even if two articles intentionally reference the same source file (e.g. a site logo). For intentional cross-article sharing, reference the WordPress URL directly in your markdown instead of a local path.
+- Each *local* image gets its own per-article copy, even if two articles intentionally reference the same source file (e.g. a site logo). For intentional cross-article sharing, reference the WordPress media URL directly in your markdown - same-host URLs reuse the existing attachment (see above) rather than re-uploading.
 - Renaming an article's parent directory changes the scope, so the next publish uploads a fresh scoped attachment - the prior one becomes orphaned in the media library.
 - Sources whose URL has no usable filename (e.g. `https://picsum.photos/400/300`) cannot be scoped or deduped and will upload fresh on each run.
 - Calling `upload_media` directly without going through `post_to_wordpress` (no article context) intentionally skips the dedup query entirely - filename-only dedup is unsafe across articles.

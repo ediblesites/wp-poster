@@ -79,12 +79,13 @@ their URLs are rewritten to the WordPress media copy.
 
 - `![alt](local.jpg)` — local file uploaded
 - `![alt](https://...)` — remote URL downloaded and re-uploaded
+- `![alt](https://<this-site>/...)` — already on the target site: the existing attachment is reused (no re-download/re-upload)
 - `![alt](url "caption")` — `"caption"` becomes a `<figcaption>`
 - `<figure>/<img>` HTML tags — also detected and uploaded
 
 Failure: remote upload fails → original URL kept; local file missing → image dropped.
 
-Images are re-uploaded on each post (no cross-run deduplication). `--test` skips uploads.
+Images are deduplicated per-article against the media library (and same-site URLs reuse their existing attachment); `--test` skips uploads.
 
 ## Format resolution (first match wins)
 

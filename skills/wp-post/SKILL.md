@@ -71,7 +71,7 @@ All images are uploaded to the WordPress media library automatically.
 - Remote upload failure → original URL kept. Local file missing → image dropped.
 - `--test` skips all uploads.
 
-The script re-uploads images on each post, but WordPress itself deduplicates by filename — if a file with the same name already exists in the media library, the upload is ignored and the existing copy is used.
+Images are deduplicated per-article against the media library: before uploading, the script looks up an existing attachment under the article's scoped filename and reuses it if found. Inline image URLs that already point at the target site are reused directly (the existing attachment is resolved by exact `source_url`, with no re-download or re-upload).
 
 ### 5. Embedded Gutenberg blocks (markdown mode)
 

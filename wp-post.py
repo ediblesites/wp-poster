@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 import requests
 import yaml
 
@@ -621,6 +622,40 @@ class WordPressPost:
         scope = re.sub(r'[^a-z0-9]+', '-', scope_raw.lower()).strip('-')
         return scope or None
 
+    def _is_same_host_url(self, value):
+        """True if value is an http(s) URL whose host matches the target site."""
+        if not value.startswith(('http://', 'https://')):
+            return False
+        return urlparse(value).netloc.lower() == urlparse(self.site_url).netloc.lower()
+
+    def resolve_local_attachment(self, url):
+        """Resolve an image URL already hosted on the target site to its attachment.
+
+        Returns (id, source_url) when an attachment's source_url matches the given
+        URL exactly, else None. Matching is exact (not by basename) so a different
+        image sharing the same basename at another upload path is not aliased.
+        """
+        filename = os.path.basename(urlparse(url).path)
+        base = os.path.splitext(filename)[0]
+        slug_base = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-')
+        if not slug_base:
+            return None
+        try:
+            response = requests.get(
+                f"{self.api_url}/media",
+                auth=self.auth,
+                params={'slug': slug_base, 'per_page': 10},
+                timeout=30,
+            )
+            if response.status_code != 200:
+                return None
+            for item in response.json():
+                if item.get('source_url', '') == url:
+                    return (item['id'], item['source_url'])
+        except (requests.RequestException, KeyError, ValueError) as e:
+            print(f"⚠ Error resolving local attachment for {url}: {e}")
+        return None
+
     def find_existing_media(self, filename):
         """Look up existing media by filename. Returns (id, source_url) or None.
 
@@ -672,6 +707,17 @@ class WordPressPost:
         cached = self._media_source_cache.get(filepath_or_url)
         if cached:
             return cached[0]
+
+        # If the source already points at the target site, reuse the existing
+        # attachment instead of re-downloading and re-uploading it (issue #10).
+        # Falls through to the normal upload path when no attachment matches.
+        if self._is_same_host_url(filepath_or_url):
+            resolved = self.resolve_local_attachment(filepath_or_url)
+            if resolved:
+                media_id, source_url = resolved
+                print(f"✓ Reusing existing media on this site: {source_url} (id={media_id})")
+                self._media_source_cache[filepath_or_url] = (media_id, source_url)
+                return media_id
 
         if filepath_or_url.startswith(('http://', 'https://')):
             original_filename = os.path.basename(filepath_or_url.split('?')[0])

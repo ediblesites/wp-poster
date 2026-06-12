@@ -1484,3 +1484,109 @@ class TestMalformedEmbeddedGutenberg:
         # Line number is file-relative: ---, title: T, ---, Intro., blank
         # put the opener at file line 6 (not body line 3).
         assert "line 6" in out
+
+
+# ===========================================================================
+# Same-host inline images are reused, not re-downloaded/re-uploaded (issue #10)
+# ===========================================================================
+#
+# When an inline image URL already points at the target WordPress instance,
+# upload_media must resolve the existing attachment instead of downloading the
+# bytes and POSTing a duplicate. Resolution is by exact source_url match so a
+# same-basename image at a different upload path is not falsely aliased. If no
+# attachment matches, it falls back to the normal download+upload path.
+
+class TestSameHostMediaReuse:
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_same_host_url_reuses_existing_attachment(self, mock_get, mock_post, wp, mock_response):
+        """A same-host inline image URL is resolved to its attachment - no upload."""
+        url = "https://example.com/wp-content/uploads/2024/01/hero.webp"
+        mock_get.return_value = mock_response(200, [
+            {"id": 77, "slug": "hero", "source_url": url},
+        ])
+
+        media_id = wp.upload_media(url)
+
+        assert media_id == 77
+        mock_post.assert_not_called()
+        # The attachment's own source_url is cached for content rewriting
+        assert wp._media_source_cache[url] == (77, url)
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_same_host_url_no_match_falls_back_to_upload(self, mock_get, mock_post, wp, mock_response):
+        """If no attachment matches the same-host URL, download + upload as normal."""
+        url = "https://example.com/wp-content/uploads/2024/01/ghost.webp"
+
+        def _get(get_url, **kwargs):
+            if "/wp-json/wp/v2/media" in get_url:
+                return mock_response(200, [])  # resolver query: nothing matches
+            dl = mock_response(200)            # image download
+            dl.content = b"img-bytes"
+            dl.headers = {"content-type": "image/webp"}
+            return dl
+
+        mock_get.side_effect = _get
+        mock_post.return_value = mock_response(201, {
+            "id": 99,
+            "source_url": "https://example.com/wp-content/uploads/2024/01/ghost.webp",
+        })
+
+        media_id = wp.upload_media(url)
+
+        assert media_id == 99
+        mock_post.assert_called_once()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_same_host_basename_collision_at_other_path_not_reused(
+        self, mock_get, mock_post, wp, mock_response
+    ):
+        """A same-basename attachment at a different upload path must NOT be reused;
+        exact source_url match is required, so this falls back to upload."""
+        url = "https://example.com/wp-content/uploads/2026/05/hero.webp"
+
+        def _get(get_url, **kwargs):
+            if "/wp-json/wp/v2/media" in get_url:
+                # slug matches but source_url is a different upload path
+                return mock_response(200, [
+                    {"id": 5, "slug": "hero",
+                     "source_url": "https://example.com/wp-content/uploads/2020/01/hero.webp"},
+                ])
+            dl = mock_response(200)
+            dl.content = b"img-bytes"
+            dl.headers = {"content-type": "image/webp"}
+            return dl
+
+        mock_get.side_effect = _get
+        mock_post.return_value = mock_response(201, {
+            "id": 61,
+            "source_url": "https://example.com/wp-content/uploads/2026/05/hero.webp",
+        })
+
+        media_id = wp.upload_media(url)
+
+        assert media_id == 61
+        mock_post.assert_called_once()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_cross_host_url_is_downloaded_and_uploaded(self, mock_get, mock_post, wp, mock_response):
+        """A cross-host image URL still downloads + uploads, with no resolver query."""
+        url = "https://cdn.other.com/img/hero.webp"
+        dl = mock_response(200)
+        dl.content = b"img-bytes"
+        dl.headers = {"content-type": "image/webp"}
+        mock_get.return_value = dl
+        mock_post.return_value = mock_response(201, {
+            "id": 5, "source_url": "https://example.com/hero.webp",
+        })
+
+        media_id = wp.upload_media(url)
+
+        assert media_id == 5
+        mock_post.assert_called_once()
+        # No resolver/dedup query for a foreign host
+        for c in mock_get.call_args_list:
+            assert "/wp-json/wp/v2/media" not in c[0][0]
