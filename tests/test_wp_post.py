@@ -481,6 +481,91 @@ class TestPostRankMath:
         assert payload["meta"]["rank_math_focus_keyword"] == "kw"
 
 
+def _rankmath_payload(mock_post):
+    """Return the JSON payload of the Rank Math updateMeta call, or None."""
+    for c in mock_post.call_args_list:
+        if c[0] and "rankmath" in c[0][0]:
+            return c[1]["json"]
+    return None
+
+
+class TestExcerptRankMathReconcile:
+    """Issue #13: an excerpt change must not leave rank_math_description stale.
+
+    When no explicit rankmath.description is given, a non-empty excerpt is
+    pushed as rank_math_description so the live meta description tracks local
+    state; an explicit rankmath.description always wins; an empty/absent excerpt
+    leaves the override untouched.
+    """
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_excerpt_only_pushes_rank_math_description(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "T", "excerpt": "New excerpt text"}, "body")
+        mock_post.side_effect = [
+            mock_response(201, {"id": 5, "link": "https://example.com/?p=5", "title": {"rendered": "T"}}),
+            mock_response(200),  # rankmath updateMeta
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        rm = _rankmath_payload(mock_post)
+        assert rm is not None
+        assert rm["meta"]["rank_math_description"] == "New excerpt text"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_explicit_rankmath_description_wins(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({
+            "title": "T",
+            "excerpt": "Excerpt text",
+            "rankmath": {"description": "Explicit SEO desc"},
+        }, "body")
+        mock_post.side_effect = [
+            mock_response(201, {"id": 6, "link": "https://example.com/?p=6", "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        rm = _rankmath_payload(mock_post)
+        assert rm["meta"]["rank_math_description"] == "Explicit SEO desc"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_excerpt_injected_without_disturbing_other_rankmath_keys(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({
+            "title": "T",
+            "excerpt": "Excerpt text",
+            "rankmath": {"title": "SEO Title"},
+        }, "body")
+        mock_post.side_effect = [
+            mock_response(201, {"id": 7, "link": "https://example.com/?p=7", "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        rm = _rankmath_payload(mock_post)
+        assert rm["meta"]["rank_math_title"] == "SEO Title"
+        assert rm["meta"]["rank_math_description"] == "Excerpt text"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_no_excerpt_no_rankmath_makes_no_updatemeta_call(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "T"}, "body")
+        # Only the create-post call is allowed; a rankmath call would exhaust this.
+        mock_post.side_effect = [
+            mock_response(201, {"id": 8, "link": "https://example.com/?p=8", "title": {"rendered": "T"}}),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        assert _rankmath_payload(mock_post) is None
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_empty_excerpt_leaves_description_untouched(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "T", "excerpt": "   "}, "body")
+        mock_post.side_effect = [
+            mock_response(201, {"id": 9, "link": "https://example.com/?p=9", "title": {"rendered": "T"}}),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        assert _rankmath_payload(mock_post) is None
+
+
 class TestPostFailure:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")

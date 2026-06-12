@@ -35,9 +35,12 @@ acf:                           # Advanced Custom Fields
 
 rankmath:                      # Rank Math SEO plugin
   title: SEO Title             # shorthand → rank_math_title
-  description: SEO desc        # shorthand → rank_math_description
+  description: SEO desc        # shorthand → rank_math_description (wins over excerpt)
   focus_keyword: keyword       # shorthand → rank_math_focus_keyword
                                # full rank_math_* keys also accepted
+# If rankmath.description is omitted, a non-empty `excerpt` is pushed as
+# rank_math_description so the live <meta name="description"> tracks the excerpt
+# instead of a stale override. An empty/absent excerpt leaves it untouched.
 
 translation_set: about-us       # MSLS translation group key (multisite only)
 ---
@@ -52,7 +55,7 @@ translation_set: about-us       # MSLS translation group key (multisite only)
 | `slug`           | string        | no       | WordPress may resolve conflicts by appending `-2` etc  |
 | `status`         | string        | no       | `draft` or `publish`; `--draft` flag overrides         |
 | `format`         | string        | no       | `raw` or `markdown`; CLI flags override                |
-| `excerpt`        | string        | no       |                                                        |
+| `excerpt`        | string        | no       | Non-empty excerpt is also pushed as `rank_math_description` unless `rankmath.description` is set (see below) |
 | `date`           | ISO 8601      | no       | Publish date                                           |
 | `author`         | string or int | no       | Username string or numeric user ID                     |
 | `post_type`      | string        | no       | `post`, `page`, or any custom post type slug           |

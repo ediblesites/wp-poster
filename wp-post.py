@@ -536,8 +536,19 @@ class WordPressPost:
             post = response.json()
             post_id = post['id']
 
-            # Handle Rank Math SEO meta via dedicated API
-            rankmath_meta = frontmatter.get('rankmath', {})
+            # Handle Rank Math SEO meta via dedicated API.
+            rankmath_meta = dict(frontmatter.get('rankmath', {}))
+            # Reconcile rank_math_description to the excerpt so an excerpt change
+            # can't leave a stale SEO description live (issue #13). An explicit
+            # rankmath.description always wins; an empty/absent excerpt leaves
+            # the override untouched. Under this tool's local-first model a
+            # divergent wp-admin override is treated as drift and overwritten.
+            excerpt = (frontmatter.get('excerpt') or '').strip()
+            has_explicit_description = (
+                'description' in rankmath_meta or 'rank_math_description' in rankmath_meta
+            )
+            if excerpt and not has_explicit_description:
+                rankmath_meta['description'] = excerpt
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
 
