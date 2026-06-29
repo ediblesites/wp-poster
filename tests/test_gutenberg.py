@@ -34,6 +34,25 @@ class TestInlineMarkdown:
         result = converter.convert("`<div>`")
         assert "<code>&lt;div&gt;</code>" in result
 
+    def test_literal_quotes_not_escaped(self, converter):
+        # Quotes in text content never need HTML escaping and must survive
+        # so WordPress shortcodes carrying quoted attributes still parse.
+        result = converter.convert('She said "hello" to me.')
+        assert 'She said "hello" to me.' in result
+        assert "&quot;" not in result
+
+    def test_shortcode_quotes_preserved(self, converter):
+        result = converter.convert('[np-image entity="smtp2go"]')
+        assert '[np-image entity="smtp2go"]' in result
+        assert "&quot;" not in result
+
+    def test_text_still_escapes_html_entities(self, converter):
+        # Dropping quote escaping must not stop escaping & < >.
+        result = converter.convert("a < b & c > d")
+        assert "&lt;" in result
+        assert "&gt;" in result
+        assert "&amp;" in result
+
     def test_link(self, converter):
         result = converter.convert("[click](https://example.com)")
         assert '<a href="https://example.com">click</a>' in result

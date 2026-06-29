@@ -221,6 +221,14 @@ class GutenbergRenderer(mistune.HTMLRenderer):
     def link(self, text, url, title=None):
         return f'<a href="{url}">{text}</a>'
 
+    def text(self, text):
+        # Escape &, <, > but NOT quotes. Text nodes are never inside HTML
+        # attributes, so per the HTML spec quotes need no escaping here.
+        # Escaping them to &quot; breaks WordPress shortcodes carrying
+        # quoted attributes (e.g. [np-image entity="smtp2go"]).
+        from mistune.util import escape
+        return escape(text, quote=False)
+
     # Table plugin overrides are standalone functions — see _GUTENBERG_TABLE_*
     # below — registered via renderer.register() after plugin init.
 
