@@ -286,6 +286,23 @@ class TestPostSuccess:
         assert result["success"] is True
         assert "/posts/99" in mock_post.call_args[0][0]
 
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_null_id_takes_create_branch(self, mock_get, mock_post, wp, md_file, mock_response):
+        # Bare `id:` in YAML loads as None. Must route to create, not
+        # POST /posts/None → 404. Regression for wp-poster issue #15.
+        path = md_file({"title": "Fresh", "id": None}, "body")
+        mock_post.return_value = mock_response(201, {
+            "id": 42, "link": "https://example.com/?p=42",
+            "title": {"rendered": "Fresh"},
+        })
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        assert result["id"] == 42
+        called_url = mock_post.call_args[0][0]
+        assert called_url.endswith("/wp-json/wp/v2/posts")
+        assert "None" not in called_url
+
 
 class TestPostCategories:
     @patch("wp_post.requests.post")

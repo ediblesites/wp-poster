@@ -516,7 +516,10 @@ class WordPressPost:
             debug_data['content'] = f"[{len(post_data.get('content', ''))} chars]"
             print(f"[verbose] Post data: {json.dumps(debug_data, indent=2, default=str)}")
 
-        if 'id' in frontmatter:
+        # A bare `id:` in frontmatter loads as None; treat that as absent so
+        # we don't POST to /{endpoint}/None and 404. Only a truthy id routes
+        # to the update branch.
+        if frontmatter.get('id'):
             # Update existing post
             url = f"{self.api_url}/{api_endpoint}/{frontmatter['id']}"
             if verbose:
@@ -552,8 +555,10 @@ class WordPressPost:
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
 
-            # Writeback id/slug (new posts only)
-            if 'id' not in frontmatter:
+            # Writeback id/slug (new posts only). Mirror the routing gate
+            # above: a bare `id:` (== None) is a "new post" from routing's
+            # perspective, so it needs writeback too.
+            if not frontmatter.get('id'):
                 self._writeback_frontmatter(filepath, post_id, post['link'])
 
             # MSLS translation linking runs on every publish (create + update)
