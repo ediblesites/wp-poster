@@ -452,6 +452,21 @@ class TestPostFeaturedImage:
         post_data = mock_post.call_args[1]["json"]
         assert post_data["featured_media"] == 50
 
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_featured_image_null_is_ignored(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file({"title": "T", "featured_image": None}, "body")
+        mock_post.side_effect = [
+            mock_response(201, {
+                "id": 1, "link": "https://example.com/?p=1",
+                "title": {"rendered": "T"},
+            }),
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        post_data = mock_post.call_args[1]["json"]
+        assert "featured_media" not in post_data
+
 
 class TestPostRankMath:
     @patch("wp_post.requests.post")

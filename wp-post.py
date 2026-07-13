@@ -504,8 +504,8 @@ class WordPressPost:
                 if term_ids:
                     post_data[taxonomy] = term_ids
         
-        # Handle featured image
-        if 'featured_image' in frontmatter:
+        # Handle featured image (treat null/empty the same as absent)
+        if frontmatter.get('featured_image'):
             media_id = self.upload_media(frontmatter['featured_image'])
             if media_id:
                 post_data['featured_media'] = media_id
