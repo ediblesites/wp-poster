@@ -2564,6 +2564,22 @@ class TestHandlePurge:
         monkeypatch.chdir(tmp_path)
         assert handle_purge(_PurgeArgs(purge_site='de', purge_network=True)) == 1
 
+    @patch('wp_post.spinupwp_purge', return_value=(True, None))
+    def test_bare_site_scope_purges_single_site_config(self, mock_purge, tmp_path, monkeypatch):
+        """Regression: bare --site ('') must be distinguished from absent (None)
+        via `is not None`, not truthiness - '' is falsy but is a valid, active
+        scope selector meaning 'the configured site'. A truthiness check would
+        silently treat this as no scope selected."""
+        (tmp_path / '.wp-poster.json').write_text(json.dumps({
+            'site_url': 'https://dashpadd.com',
+            'wp_cli_alias': 'dash/sites/dashpadd.com/files',
+        }))
+        monkeypatch.chdir(tmp_path)
+
+        assert handle_purge(_PurgeArgs(purge_site='')) == 0
+        assert mock_purge.call_count == 1
+        assert mock_purge.call_args[0][1]['site_url'] == 'https://dashpadd.com'
+
 
 class TestPurgeArgparseWiring:
     def test_dash_dash_file_does_not_collide_with_positional(self):
@@ -2592,3 +2608,27 @@ class TestMainPurgeDispatch:
             wp_post.main()
         assert exc.value.code == 3
         assert mock_handle.called
+
+    def test_site_selector_without_purge_flag_errors_instead_of_posting(self, monkeypatch):
+        """Regression: --site now exact-matches the new purge flag, shadowing
+        what used to be an unambiguous abbreviation of --site-url. Silently
+        discarding the override and posting to the config's site would be a
+        wrong-target publish; it must fail loudly instead."""
+        monkeypatch.setattr(sys, 'argv', ['wp-post', '--site', 'https://override.com', 'post.md'])
+        with pytest.raises(SystemExit) as exc:
+            wp_post.main()
+        assert exc.value.code == 1
+
+    def test_network_selector_without_purge_flag_errors_instead_of_posting(self, monkeypatch):
+        """Regression: --network post.md --test used to silently ignore
+        --network and run a normal post in test mode."""
+        monkeypatch.setattr(sys, 'argv', ['wp-post', '--network', 'post.md', '--test'])
+        with pytest.raises(SystemExit) as exc:
+            wp_post.main()
+        assert exc.value.code == 1
+
+    def test_file_selector_without_purge_flag_errors(self, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['wp-post', '--file', 'post.md'])
+        with pytest.raises(SystemExit) as exc:
+            wp_post.main()
+        assert exc.value.code == 1

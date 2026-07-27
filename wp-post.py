@@ -1923,6 +1923,20 @@ def main():
     if args.purge:
         sys.exit(handle_purge(args))
 
+    # A purge scope selector without --purge means the flag was likely meant
+    # for --purge but the flag itself was left off, or argparse's abbreviation
+    # matching silently intercepted a similarly named option (e.g. --site
+    # matching --site-url). Fail loudly instead of silently dropping the
+    # value or posting to the wrong site.
+    given = [flag for flag, active in (
+        ('--file', args.purge_file is not None),
+        ('--site', args.purge_site is not None),
+        ('--network', args.purge_network),
+    ) if active]
+    if given:
+        print(f"✗ {', '.join(given)} only valid with --purge", file=sys.stderr)
+        sys.exit(1)
+
     # Handle --init flag
     if args.init:
         sys.exit(0 if init_config() else 1)
