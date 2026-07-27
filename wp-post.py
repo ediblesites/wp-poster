@@ -1269,8 +1269,8 @@ def _validate_purge_target(target, source):
     if post_id is not None:
         if isinstance(post_id, bool) or not isinstance(post_id, int) or post_id <= 0:
             raise PurgeConfigError(
-                f"Target '{target['label']}' has an unusable post id ({post_id!r}). "
-                "Expected a positive integer."
+                f"Target '{target['label']}' has an unusable post id ({post_id!r}) "
+                f"in {source}. Expected a positive integer."
             )
     return target
 
@@ -1318,10 +1318,13 @@ def resolve_purge_targets(scope, value, config, project_root=None, config_path=N
         valid = ', '.join(sorted(sites))
         if not value:
             raise PurgeConfigError(
-                f"--site requires a site key on a network project. Valid keys: {valid}"
+                f"--site requires a site key on a network project (from {source}). "
+                f"Valid keys: {valid}"
             )
         if value not in sites:
-            raise PurgeConfigError(f"Unknown site '{value}'. Valid keys: {valid}")
+            raise PurgeConfigError(
+                f"Unknown site '{value}' in {source}. Valid keys: {valid}"
+            )
         identity = resolve_site_identity(project_root, value, sites[value])
         return [_validate_purge_target(
             {'label': value, 'site_url': identity['site_url'], 'post_id': None}, source)]
@@ -1339,10 +1342,26 @@ def resolve_purge_targets(scope, value, config, project_root=None, config_path=N
             "published yet and nothing is cached for it."
         )
 
+    # Names both the config and the offending file, so a validation failure
+    # below (e.g. a bad post id) points at the file the user actually ran
+    # --purge on, not just the config that supplied the site_url.
+    file_source = f"{value} (config: {source})"
+
     if sites:
-        site_key, site_info = find_site_for_file(project_root, config, value)
+        try:
+            site_key, site_info = find_site_for_file(project_root, config, value)
+        except (KeyError, TypeError) as e:
+            # A network.sites entry with a missing or null content_path breaks
+            # find_site_for_file's containment check; report it instead of
+            # letting the KeyError/TypeError escape as a raw traceback.
+            raise PurgeConfigError(
+                f"A network.sites entry in {source} has an invalid or missing "
+                f"content_path ({e}); cannot determine which site owns {value}."
+            )
         if site_key is None:
-            configured = ', '.join(sorted(s['content_path'] for s in sites.values()))
+            configured = ', '.join(sorted(
+                p for p in (s.get('content_path') for s in sites.values()) if p
+            ))
             raise PurgeConfigError(
                 f"{value} is not inside any configured content_path ({configured}) "
                 f"from {source}, so its site could not be determined."
@@ -1352,13 +1371,13 @@ def resolve_purge_targets(scope, value, config, project_root=None, config_path=N
             'label': f'{site_key} #{post_id}',
             'site_url': identity['site_url'],
             'post_id': post_id,
-        }, source)]
+        }, file_source)]
 
     site_url = config.get('site_url')
     if not site_url:
         raise PurgeConfigError(f"No site_url in {source}; cannot resolve --file.")
     return [_validate_purge_target(
-        {'label': f'#{post_id}', 'site_url': site_url, 'post_id': post_id}, source)]
+        {'label': f'#{post_id}', 'site_url': site_url, 'post_id': post_id}, file_source)]
 
 
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):

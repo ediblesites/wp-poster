@@ -2264,21 +2264,32 @@ class TestResolvePurgeTargetsSingleSite:
 
 class TestResolvePurgeTargetsValidation:
     def test_incomplete_network_entry_raises_before_any_command(self, tmp_path):
-        """resolve_site_identity yields site_url=None for an incomplete entry."""
+        """resolve_site_identity yields site_url=None for an incomplete entry.
+
+        Patches subprocess.run to prove the failure happens before any wp-cli
+        call would be spawned, and asserts the config_path itself (not just
+        the word 'site_url') is in the message.
+        """
         config = {'network': {'wp_cli_alias': '@x', 'sites': {
             'de': {'content_path': 'de/content/'},   # no site_url / locale / blog_id
         }}}
-        with pytest.raises(PurgeConfigError) as exc:
-            resolve_purge_targets('site', 'de', config, str(tmp_path))
+        config_path = str(tmp_path / '.wp-poster.json')
+        with patch('wp_post.subprocess.run') as mock_run:
+            with pytest.raises(PurgeConfigError) as exc:
+                resolve_purge_targets('site', 'de', config, str(tmp_path), config_path)
+            mock_run.assert_not_called()
         assert 'site_url' in str(exc.value)
+        assert config_path in str(exc.value)
 
     def test_non_http_site_url_rejected(self, tmp_path):
         config = {'network': {'wp_cli_alias': '@x', 'sites': {
             'de': {'content_path': 'de/content/', 'site_url': 'ftp://e.com', 'blog_id': 3},
         }}}
+        config_path = str(tmp_path / '.wp-poster.json')
         with pytest.raises(PurgeConfigError) as exc:
-            resolve_purge_targets('site', 'de', config, str(tmp_path))
+            resolve_purge_targets('site', 'de', config, str(tmp_path), config_path)
         assert 'site_url' in str(exc.value)
+        assert config_path in str(exc.value)
 
     def test_non_integer_post_id_rejected(self, tmp_path):
         f = tmp_path / 'a.md'
@@ -2286,3 +2297,94 @@ class TestResolvePurgeTargetsValidation:
         with pytest.raises(PurgeConfigError) as exc:
             resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None)
         assert 'post id' in str(exc.value)
+
+    def test_boolean_post_id_rejected(self, tmp_path):
+        """id: true is truthy (passes the 'not been published' check) but is
+        not an integer - isinstance(True, int) is True in Python, so this is
+        the branch most likely to regress silently if the bool guard is lost.
+        """
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: true\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None)
+        assert 'post id' in str(exc.value)
+
+    def test_negative_post_id_rejected(self, tmp_path):
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: -5\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None)
+        assert 'post id' in str(exc.value)
+
+    def test_zero_post_id_rejected_as_unpublished_not_as_bad_id(self, tmp_path):
+        """id: 0 is falsy, so it is caught by the 'not been published' check
+        before it ever reaches the post-id validation - it never reads as a
+        bad id, it reads as no id at all.
+        """
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: 0\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None)
+        assert 'not been published' in str(exc.value)
+
+    def test_missing_content_path_reported_via_file_scope(self, tmp_path):
+        """A network.sites entry missing content_path must not escape as a
+        bare KeyError from find_site_for_file - it must be reported before
+        any subprocess, naming the config.
+        """
+        config = {'network': {'wp_cli_alias': '@x', 'sites': {
+            'de': {'site_url': 'https://e.com/de', 'blog_id': 3},  # no content_path
+        }}}
+        config_path = str(tmp_path / '.wp-poster.json')
+        f = tmp_path / 'x.md'
+        f.write_text('---\ntitle: T\nid: 5\n---\nbody', encoding='utf-8')
+        with patch('wp_post.subprocess.run') as mock_run:
+            with pytest.raises(PurgeConfigError) as exc:
+                resolve_purge_targets('file', str(f), config, str(tmp_path), config_path)
+            mock_run.assert_not_called()
+        assert 'content_path' in str(exc.value)
+        assert config_path in str(exc.value)
+
+    def test_null_content_path_reported_via_file_scope(self, tmp_path):
+        """A network.sites entry with content_path: null must not escape as a
+        bare TypeError from find_site_for_file's Path() construction.
+        """
+        config = {'network': {'wp_cli_alias': '@x', 'sites': {
+            'de': {'content_path': None, 'site_url': 'https://e.com/de', 'blog_id': 3},
+        }}}
+        config_path = str(tmp_path / '.wp-poster.json')
+        f = tmp_path / 'x.md'
+        f.write_text('---\ntitle: T\nid: 5\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), config, str(tmp_path), config_path)
+        assert 'content_path' in str(exc.value)
+        assert config_path in str(exc.value)
+
+    def test_site_scope_missing_key_names_the_source(self, tmp_path):
+        config = {'network': {'wp_cli_alias': '@x', 'sites': {
+            'de': {'content_path': 'de/content/', 'site_url': 'https://e.com/de', 'blog_id': 3},
+        }}}
+        config_path = str(tmp_path / '.wp-poster.json')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('site', '', config, str(tmp_path), config_path)
+        assert config_path in str(exc.value)
+
+    def test_site_scope_unknown_key_names_the_source(self, tmp_path):
+        config = {'network': {'wp_cli_alias': '@x', 'sites': {
+            'de': {'content_path': 'de/content/', 'site_url': 'https://e.com/de', 'blog_id': 3},
+        }}}
+        config_path = str(tmp_path / '.wp-poster.json')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('site', 'zz', config, str(tmp_path), config_path)
+        assert config_path in str(exc.value)
+
+    def test_bad_post_id_message_names_the_offending_file(self, tmp_path):
+        """The post-id validation error must locate the actual markdown file,
+        not just the config that supplied the site_url.
+        """
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: -5\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None, '/p/.wp-poster.json')
+        assert str(f) in str(exc.value)
+        assert '/p/.wp-poster.json' in str(exc.value)
