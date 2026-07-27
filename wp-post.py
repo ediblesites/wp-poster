@@ -1380,6 +1380,43 @@ def resolve_purge_targets(scope, value, config, project_root=None, config_path=N
         {'label': f'#{post_id}', 'site_url': site_url, 'post_id': post_id}, file_source)]
 
 
+def build_purge_command(transport, target):
+    """Build the wp-cli argv that purges one target.
+
+    A target with a post_id purges just that post; without one it purges the
+    whole site. --url= is how wp-cli selects a blog within a multisite
+    network, and is harmless on a single site.
+    """
+    base = transport + ['spinupwp', 'cache']
+    if target['post_id'] is None:
+        return base + ['purge-site', f"--url={target['site_url']}"]
+    return base + ['purge-post', str(target['post_id']), f"--url={target['site_url']}"]
+
+
+def spinupwp_purge(transport, target, timeout=_PURGE_TIMEOUT):
+    """Purge one target. Returns (ok, error) and never raises.
+
+    Failures are returned rather than raised so the caller can keep purging
+    the remaining targets: one unreachable site should not leave the rest of
+    the network stale.
+    """
+    cmd = build_purge_command(transport, target)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, "wp-cli not found (is `wp` on PATH?)"
+    except subprocess.TimeoutExpired:
+        # Not an OSError subclass, so this clause is load-bearing.
+        return False, f"wp timed out after {timeout}s"
+    except OSError as e:
+        return False, f"could not run wp: {e}"
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()
+        return False, f"wp exited {result.returncode}" + (f": {detail}" if detail else "")
+    return True, None
+
+
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
     """Resolve format: CLI > frontmatter > config > default(raw)"""
     if cli_raw:

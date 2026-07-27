@@ -2388,3 +2388,72 @@ class TestResolvePurgeTargetsValidation:
             resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None, '/p/.wp-poster.json')
         assert str(f) in str(exc.value)
         assert '/p/.wp-poster.json' in str(exc.value)
+
+
+# ===========================================================================
+# Cache purging: command construction and execution
+# ===========================================================================
+
+build_purge_command = wp_post.build_purge_command
+spinupwp_purge = wp_post.spinupwp_purge
+
+_TRANSPORT = ['wp', '@payperfax']
+_SITE_TARGET = {'label': 'de', 'site_url': 'https://e.com/de', 'post_id': None}
+_POST_TARGET = {'label': 'de #412', 'site_url': 'https://e.com/de', 'post_id': 412}
+
+
+class TestBuildPurgeCommand:
+    def test_site_command(self):
+        assert build_purge_command(_TRANSPORT, _SITE_TARGET) == [
+            'wp', '@payperfax', 'spinupwp', 'cache', 'purge-site',
+            '--url=https://e.com/de',
+        ]
+
+    def test_post_command(self):
+        assert build_purge_command(_TRANSPORT, _POST_TARGET) == [
+            'wp', '@payperfax', 'spinupwp', 'cache', 'purge-post', '412',
+            '--url=https://e.com/de',
+        ]
+
+    def test_ssh_transport_is_preserved(self):
+        transport = ['wp', '--ssh=dash/sites/dashpadd.com/files']
+        assert build_purge_command(transport, _SITE_TARGET)[:2] == transport
+
+
+class TestSpinupwpPurge:
+    @patch('wp_post.subprocess.run')
+    def test_success(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='Success.', stderr='')
+        assert spinupwp_purge(_TRANSPORT, _SITE_TARGET) == (True, None)
+
+    @patch('wp_post.subprocess.run')
+    def test_nonzero_exit_reports_stderr(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='no such blog')
+        ok, error = spinupwp_purge(_TRANSPORT, _SITE_TARGET)
+        assert ok is False
+        assert 'no such blog' in error
+
+    @patch('wp_post.subprocess.run', side_effect=FileNotFoundError)
+    def test_wp_cli_missing(self, mock_run):
+        ok, error = spinupwp_purge(_TRANSPORT, _SITE_TARGET)
+        assert ok is False
+        assert 'wp-cli not found' in error
+
+    @patch('wp_post.subprocess.run',
+           side_effect=wp_post.subprocess.TimeoutExpired(cmd='wp', timeout=30))
+    def test_timeout(self, mock_run):
+        ok, error = spinupwp_purge(_TRANSPORT, _SITE_TARGET)
+        assert ok is False
+        assert 'timed out' in error
+
+    @patch('wp_post.subprocess.run', side_effect=PermissionError("denied"))
+    def test_other_oserror_is_returned_not_raised(self, mock_run):
+        ok, error = spinupwp_purge(_TRANSPORT, _SITE_TARGET)
+        assert ok is False
+        assert 'denied' in error
+
+    @patch('wp_post.subprocess.run')
+    def test_runs_the_built_command(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+        spinupwp_purge(_TRANSPORT, _POST_TARGET)
+        assert mock_run.call_args[0][0] == build_purge_command(_TRANSPORT, _POST_TARGET)
