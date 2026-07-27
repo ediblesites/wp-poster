@@ -1417,6 +1417,64 @@ def spinupwp_purge(transport, target, timeout=_PURGE_TIMEOUT):
     return True, None
 
 
+def handle_purge(args):
+    """Resolve the requested scope, purge each target, return an exit code.
+
+    Configuration problems are reported before anything runs. Once purging
+    starts, a failure on one target is recorded and the loop continues, so a
+    single unreachable site cannot leave the rest of the network stale.
+    """
+    selected = [
+        ('file', args.purge_file is not None),
+        ('site', args.purge_site is not None),
+        ('network', bool(args.purge_network)),
+    ]
+    chosen = [name for name, active in selected if active]
+    if len(chosen) != 1:
+        problem = "Specify exactly one scope" if not chosen else f"Got {len(chosen)} scopes"
+        print(f"✗ {problem} for --purge: --file <path>, --site [key], or --network",
+              file=sys.stderr)
+        return 1
+    scope = chosen[0]
+    value = {'file': args.purge_file, 'site': args.purge_site, 'network': None}[scope]
+
+    # Anchor config discovery at the target file when there is one, so a
+    # --file from another project is never purged against the shell's site.
+    anchor = args.purge_file or os.getcwd()
+
+    try:
+        config, config_path, project_root = find_config_for_purge(anchor)
+        transport = resolve_wp_cli_transport(config, config_path)
+        targets = resolve_purge_targets(scope, value, config, project_root, config_path)
+    except PurgeConfigError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 1
+
+    noun = 'site' if len(targets) == 1 else 'sites'
+    print(f"Purging SpinupWP cache ({len(targets)} {noun})")
+
+    failures = 0
+    for target in targets:
+        if args.test:
+            print(f"  [test] {target['label']:<12} {' '.join(build_purge_command(transport, target))}")
+            continue
+        if args.verbose:
+            print(f"  → {' '.join(build_purge_command(transport, target))}")
+        ok, error = spinupwp_purge(transport, target)
+        if ok:
+            print(f"  ✓ {target['label']:<12} {target['site_url']}")
+        else:
+            failures += 1
+            print(f"  ✗ {target['label']:<12} {target['site_url']}  ({error})")
+
+    if args.test:
+        return 0
+    purged = len(targets) - failures
+    mark = '✓' if failures == 0 else '✗'
+    print(f"{mark} {purged} purged, {failures} failed")
+    return 1 if failures else 0
+
+
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
     """Resolve format: CLI > frontmatter > config > default(raw)"""
     if cli_raw:
@@ -1745,7 +1803,7 @@ def init_network_config():
     return True
 
 
-def main():
+def build_arg_parser():
     parser = argparse.ArgumentParser(
         description='Post files with frontmatter to WordPress',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1844,9 +1902,27 @@ example file:
     parser.add_argument('--markdown', action='store_true', help='Convert markdown to Gutenberg blocks')
     parser.add_argument('--raw', action='store_true', help='Post content as-is (override format frontmatter)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Show detailed debug output')
-    
+    parser.add_argument('--purge', action='store_true',
+                        help='Clear the SpinupWP page cache (requires a scope selector)')
+    # dest is mandatory here: a bare --file would collide with the positional
+    # 'file' argument and silently parse to None.
+    parser.add_argument('--file', dest='purge_file', metavar='PATH',
+                        help='--purge scope: the page published from this file')
+    parser.add_argument('--site', dest='purge_site', nargs='?', const='', metavar='KEY',
+                        help='--purge scope: one site (network key, or bare for a single site)')
+    parser.add_argument('--network', dest='purge_network', action='store_true',
+                        help='--purge scope: every site in the network')
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
-    
+
+    # Handle --purge flag
+    if args.purge:
+        sys.exit(handle_purge(args))
+
     # Handle --init flag
     if args.init:
         sys.exit(0 if init_config() else 1)

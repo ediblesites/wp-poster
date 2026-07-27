@@ -2457,3 +2457,138 @@ class TestSpinupwpPurge:
         mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
         spinupwp_purge(_TRANSPORT, _POST_TARGET)
         assert mock_run.call_args[0][0] == build_purge_command(_TRANSPORT, _POST_TARGET)
+
+
+# ===========================================================================
+# Cache purging: orchestration
+# ===========================================================================
+
+handle_purge = wp_post.handle_purge
+
+
+class _PurgeArgs:
+    """Stand-in for the argparse Namespace handle_purge consumes."""
+    def __init__(self, purge_file=None, purge_site=None, purge_network=False,
+                 test=False, verbose=False):
+        self.purge_file = purge_file
+        self.purge_site = purge_site
+        self.purge_network = purge_network
+        self.test = test
+        self.verbose = verbose
+
+
+class TestHandlePurge:
+    @patch('wp_post.spinupwp_purge', return_value=(True, None))
+    def test_network_purges_every_site_and_exits_zero(self, mock_purge, tmp_path, monkeypatch):
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        monkeypatch.chdir(root)
+
+        assert handle_purge(_PurgeArgs(purge_network=True)) == 0
+        assert mock_purge.call_count == 2
+        urls = [c[0][1]['site_url'] for c in mock_purge.call_args_list]
+        assert urls == ['https://e.com', 'https://e.com/de']
+
+    @patch('wp_post.spinupwp_purge', side_effect=[(False, 'boom'), (True, None)])
+    def test_one_failure_does_not_abort_the_rest(self, mock_purge, tmp_path, monkeypatch):
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        monkeypatch.chdir(root)
+
+        assert handle_purge(_PurgeArgs(purge_network=True)) == 1
+        assert mock_purge.call_count == 2
+
+    @patch('wp_post.spinupwp_purge', return_value=(True, None))
+    def test_file_scope_purges_the_post(self, mock_purge, tmp_path, monkeypatch):
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        f = root / 'de' / 'content' / 'p' / 'index.md'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: T\nid: 412\n---\nbody', encoding='utf-8')
+        monkeypatch.chdir(root)
+
+        assert handle_purge(_PurgeArgs(purge_file=str(f))) == 0
+        target = mock_purge.call_args[0][1]
+        assert target == {'label': 'de #412', 'site_url': 'https://e.com/de', 'post_id': 412}
+
+    @patch('wp_post.spinupwp_purge', return_value=(True, None))
+    def test_file_scope_ignores_cwd_config(self, mock_purge, tmp_path, monkeypatch):
+        """Regression: the target file's project, not the shell's, decides the site."""
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        f = root / 'de' / 'content' / 'p' / 'index.md'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: T\nid: 412\n---\nbody', encoding='utf-8')
+
+        decoy = tmp_path / 'decoy'
+        decoy.mkdir()
+        (decoy / '.wp-poster.json').write_text(
+            json.dumps({'site_url': 'https://wrong.com', 'wp_cli_alias': '@wrong'}))
+        monkeypatch.chdir(decoy)
+
+        assert handle_purge(_PurgeArgs(purge_file=str(f))) == 0
+        assert mock_purge.call_args[0][1]['site_url'] == 'https://e.com/de'
+
+    @patch('wp_post.subprocess.run')
+    def test_end_to_end_command_reaches_subprocess(self, mock_run, tmp_path, monkeypatch):
+        """The one orchestration test that goes through the real call chain."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        monkeypatch.chdir(root)
+
+        assert handle_purge(_PurgeArgs(purge_site='de')) == 0
+        assert mock_run.call_args[0][0] == [
+            'wp', '@testsite', 'spinupwp', 'cache', 'purge-site', '--url=https://e.com/de']
+
+    @patch('wp_post.spinupwp_purge')
+    def test_test_mode_runs_nothing(self, mock_purge, tmp_path, monkeypatch, capsys):
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        monkeypatch.chdir(root)
+
+        assert handle_purge(_PurgeArgs(purge_network=True, test=True)) == 0
+        mock_purge.assert_not_called()
+        assert 'purge-site' in capsys.readouterr().out
+
+    @patch('wp_post.spinupwp_purge')
+    def test_config_error_exits_one_without_purging(self, mock_purge, tmp_path, monkeypatch):
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        f = root / 'de' / 'content' / 'unpublished.md'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: T\n---\nbody', encoding='utf-8')
+        monkeypatch.chdir(root)
+
+        assert handle_purge(_PurgeArgs(purge_file=str(f))) == 1
+        mock_purge.assert_not_called()
+
+    def test_no_scope_selector_exits_one(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert handle_purge(_PurgeArgs()) == 1
+
+    def test_two_scope_selectors_exit_one(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert handle_purge(_PurgeArgs(purge_site='de', purge_network=True)) == 1
+
+
+class TestPurgeArgparseWiring:
+    def test_dash_dash_file_does_not_collide_with_positional(self):
+        """Regression: --file without an explicit dest silently nulls the value."""
+        args = wp_post.build_arg_parser().parse_args(['--purge', '--file', 'x.md'])
+        assert args.purge_file == 'x.md'
+        assert args.file is None
+
+    def test_positional_file_still_parses(self):
+        args = wp_post.build_arg_parser().parse_args(['post.md'])
+        assert args.file == 'post.md'
+        assert args.purge_file is None
+
+    def test_bare_site_flag_is_empty_string(self):
+        assert wp_post.build_arg_parser().parse_args(['--purge', '--site']).purge_site == ''
+
+    def test_site_flag_with_key(self):
+        assert wp_post.build_arg_parser().parse_args(['--purge', '--site', 'de']).purge_site == 'de'
+
+
+class TestMainPurgeDispatch:
+    @patch('wp_post.handle_purge', return_value=3)
+    def test_main_dispatches_and_propagates_exit_code(self, mock_handle, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['wp-post', '--purge', '--network'])
+        with pytest.raises(SystemExit) as exc:
+            wp_post.main()
+        assert exc.value.code == 3
+        assert mock_handle.called
