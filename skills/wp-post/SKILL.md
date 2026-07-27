@@ -139,6 +139,22 @@ where each site entry carries `content_path`, `site_url`, `locale`, and
 `blog_id`. No per-site config files are needed (older per-site
 `.wp-poster.json` files are still honored as a fallback).
 
+### 8. Clearing the cache
+
+After publishing, the SpinupWP plugin purges the page cache on its own, so no
+action is normally needed. Use `wp-post --purge` when a change bypassed that:
+
+    wp-post --purge --file content/de/my-post/index.md   # one page
+    wp-post --purge --site de                            # one site
+    wp-post --purge --network                            # every site
+
+Most importantly, run `--purge --site` or `--purge --network` after publishing
+a post with `translation_set`. MSLS links are written in a way that does not
+trigger WordPress's own cache invalidation, so sibling-language pages keep
+serving a stale language switcher until purged.
+
+Requires `wp_cli_alias` in `.wp-poster.json`.
+
 ## Configuration
 
 wp-post finds credentials from (first match wins):
@@ -150,6 +166,10 @@ wp-post finds credentials from (first match wins):
 Check active config: `wp-post --config-path`
 
 If no credentials are configured, run `wp-post --init` for interactive setup.
+
+- `wp_cli_alias` - required only for `--purge`. A value starting with `@` is a
+  WP-CLI alias; anything else is used as a `wp --ssh=` target. Network projects
+  read `network.wp_cli_alias` instead.
 
 ## Error handling
 

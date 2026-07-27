@@ -36,6 +36,11 @@ wp-post my-file.html --verbose
 
 # Show active config file path
 wp-post --config-path
+
+# Clear the SpinupWP page cache
+wp-post --purge --file my-file.md      # just that page
+wp-post --purge --site de              # one site in a network
+wp-post --purge --network              # every site in the network
 ```
 
 ## Configuration
@@ -64,6 +69,7 @@ This means project-specific configs override global configs, and running from `/
   "app_password": "your-app-password",
   "author_context": "default-author",
   "default_format": "raw",
+  "wp_cli_alias": "myhost/sites/example.com/files",
   "ssh": {
     "key": "~/.ssh/my_key",
     "user": "ssh-user",
@@ -74,6 +80,15 @@ This means project-specific configs override global configs, and running from `/
 ```
 
 The `ssh` section is optional metadata for external tooling (not used by wp-post directly).
+
+`wp_cli_alias` is required only for `--purge`. A value starting with `@` is a
+WP-CLI alias resolved through `~/.wp-cli/config.yml`; anything else is used as
+a `wp --ssh=` target, which needs no WP-CLI config at all. Network projects
+read it from `network.wp_cli_alias` instead, where it already exists.
+
+For `--purge --file`, config is resolved by walking up from the target file,
+not from the working directory, so purging a file in another project always
+uses that project's configuration.
 
 ### Credential Validation
 Running `wp-post my-file.md` without credentials will show helpful error messages:
@@ -231,6 +246,37 @@ Preview content without posting:
 wp-post my-file.html --test
 wp-post my-file.md --test --markdown
 ```
+
+## Cache purging
+
+`--purge` clears the SpinupWP page cache. It requires exactly one scope:
+
+| Scope                 | Clears                                            |
+|-----------------------|---------------------------------------------------|
+| `--file <path>`       | the single page published from that file          |
+| `--site [key]`        | one site (network key, or bare for a single site) |
+| `--network`           | every site in the network                         |
+
+`--file`, `--site`, and `--network` are purge-scope selectors: they are only
+valid together with `--purge`. Passing one without `--purge` is a hard error
+(exit 1) rather than being silently ignored, since `--site` also reads as an
+abbreviation of the unrelated `--site-url` flag and misreading it that way
+could publish to the wrong site.
+
+It never runs automatically - the SpinupWP plugin already purges on ordinary
+content updates. Reach for it when a change bypassed that, most notably after
+MSLS translation linking: those links are written with `wp eval` and
+`update_option`, which never fires `save_post`, so the sibling-language pages
+keep serving a stale language switcher. `--purge --file` clears only the page
+you name, so use `--site` or `--network` after linking translations.
+
+Add `--test` to print the commands without running them. A failure on one site
+is reported and the remaining sites are still purged; the exit code is 1 if any
+target failed.
+
+Cloudflare is deliberately not purged. These sites serve
+`cf-cache-status: DYNAMIC` for HTML, so there is nothing cached at the edge to
+clear; see `docs/superpowers/specs/2026-07-27-cache-purge-design.md`.
 
 ## Claude Code Skill
 
