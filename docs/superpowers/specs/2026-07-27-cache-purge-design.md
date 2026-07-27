@@ -166,8 +166,12 @@ exists to hold an authenticated REST session that purging does not need.
 - `handle_purge(args)` -> orchestration, output, exit code. Called from
   `main()` alongside the other standalone action flags.
 
-Reuses `find_network_config`, `find_site_for_file`, `resolve_site_identity`,
-`load_config` and `load_frontmatter` unchanged.
+Reuses `find_network_config`, `resolve_site_identity` and `load_frontmatter`
+unchanged. `find_site_for_file` was changed as part of this feature (path-
+boundary containment instead of a string prefix check). `load_config` is
+deliberately NOT used for purge; `find_config_for_purge` replaces it so config
+discovery anchors at the target file instead of the working directory, which
+is the entire point of the file-anchoring fix.
 
 Splitting target resolution from execution is what makes the feature testable
 without SSH: `resolve_purge_targets` is asserted directly, and
@@ -192,7 +196,7 @@ immediately.
 Plain text progress to stdout, matching the existing convention:
 
 ```
-Purging SpinupWP cache (network: 6 sites)
+Purging SpinupWP cache (6 sites)
   ✓ en   https://payperfax.com
   ✓ es   https://payperfax.com/es
   ✓ de   https://payperfax.com/de

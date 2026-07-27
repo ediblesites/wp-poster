@@ -81,10 +81,14 @@ This means project-specific configs override global configs, and running from `/
 
 The `ssh` section is optional metadata for external tooling (not used by wp-post directly).
 
-`wp_cli_alias` is required only for `--purge`. A value starting with `@` is a
-WP-CLI alias resolved through `~/.wp-cli/config.yml`; anything else is used as
-a `wp --ssh=` target, which needs no WP-CLI config at all. Network projects
-read it from `network.wp_cli_alias` instead, where it already exists.
+`wp_cli_alias` is required for `--purge`, and network projects also use it for
+MSLS translation linking. A value starting with `@` is a WP-CLI alias resolved
+through `~/.wp-cli/config.yml`; anything else is used as a `wp --ssh=` target,
+which needs no WP-CLI config at all - but only `--purge` understands that
+form. MSLS translation linking passes the alias straight to `wp` and requires
+the `@alias` form; an ssh target there will break translation linking even
+though `--purge` keeps working. Network projects read `wp_cli_alias` from
+`network.wp_cli_alias` instead, where it already exists.
 
 For `--purge --file`, config is resolved by walking up from the target file,
 not from the working directory, so purging a file in another project always

@@ -167,9 +167,11 @@ Check active config: `wp-post --config-path`
 
 If no credentials are configured, run `wp-post --init` for interactive setup.
 
-- `wp_cli_alias` - required only for `--purge`. A value starting with `@` is a
-  WP-CLI alias; anything else is used as a `wp --ssh=` target. Network projects
-  read `network.wp_cli_alias` instead.
+- `wp_cli_alias` - required for `--purge`; network projects also use it for
+  MSLS translation linking (step 8). A value starting with `@` is a WP-CLI
+  alias; anything else is used as a `wp --ssh=` target, but only `--purge`
+  understands that form - MSLS translation linking requires the `@alias` form.
+  Network projects read `network.wp_cli_alias` instead.
 
 ## Error handling
 
