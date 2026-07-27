@@ -2141,3 +2141,148 @@ class TestFindSiteForFileBoundaries:
     def test_nested_path_still_matches(self):
         key, _info = find_site_for_file('/project', self.NET, '/project/de/content/a/b/post.md')
         assert key == 'de'
+
+
+# ===========================================================================
+# Cache purging: scope resolution
+# ===========================================================================
+
+resolve_purge_targets = wp_post.resolve_purge_targets
+
+
+def _purge_network(tmp_path):
+    """Scaffold a 2-site network and return (project_root, config)."""
+    root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+    with open(root / '.wp-poster.json') as f:
+        return str(root), json.load(f)
+
+
+class TestResolvePurgeTargetsNetwork:
+    def test_network_scope_returns_every_site(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        targets = resolve_purge_targets('network', None, config, root)
+        assert [t['label'] for t in targets] == ['en', 'de']
+        assert [t['site_url'] for t in targets] == ['https://e.com', 'https://e.com/de']
+        assert all(t['post_id'] is None for t in targets)
+
+    def test_site_scope_returns_one_site(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        targets = resolve_purge_targets('site', 'de', config, root)
+        assert targets == [{'label': 'de', 'site_url': 'https://e.com/de', 'post_id': None}]
+
+    def test_unknown_site_key_lists_valid_keys(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('site', 'zz', config, root)
+        assert 'de' in str(exc.value) and 'en' in str(exc.value)
+
+    def test_site_scope_without_key_on_network_raises(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('site', '', config, root)
+        assert 'requires a site key' in str(exc.value)
+
+    def test_file_scope_resolves_blog_from_path(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        target_file = tmp_path / 'de' / 'content' / 'post' / 'index.md'
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text('---\ntitle: T\nid: 412\n---\nbody', encoding='utf-8')
+
+        targets = resolve_purge_targets('file', str(target_file), config, root)
+        assert targets == [{'label': 'de #412', 'site_url': 'https://e.com/de', 'post_id': 412}]
+
+    def test_file_outside_every_content_path_raises(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        stray = tmp_path / 'elsewhere' / 'index.md'
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_text('---\ntitle: T\nid: 9\n---\nbody', encoding='utf-8')
+
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(stray), config, root)
+        assert 'content_path' in str(exc.value)
+
+
+class TestResolvePurgeTargetsUnpublished:
+    def test_missing_id_raises(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        f = tmp_path / 'de' / 'content' / 'x.md'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: T\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), config, root)
+        assert 'not been published' in str(exc.value)
+
+    def test_null_id_raises(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        f = tmp_path / 'de' / 'content' / 'x.md'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: T\nid: null\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), config, root)
+        assert 'not been published' in str(exc.value)
+
+    def test_missing_file_raises_purge_error_not_oserror(self, tmp_path):
+        """A nonexistent --file must not escape as a traceback."""
+        root, config = _purge_network(tmp_path)
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(tmp_path / 'de' / 'content' / 'nope.md'), config, root)
+        assert 'Could not read' in str(exc.value)
+
+    def test_malformed_yaml_raises_purge_error(self, tmp_path):
+        root, config = _purge_network(tmp_path)
+        f = tmp_path / 'de' / 'content' / 'bad.md'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: "unterminated\n  bad: [\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), config, root)
+        assert 'Could not read' in str(exc.value)
+
+
+class TestResolvePurgeTargetsSingleSite:
+    SINGLE = {'site_url': 'https://dashpadd.com', 'wp_cli_alias': 'dash/sites/dashpadd.com/files'}
+
+    def test_site_scope_uses_top_level_site_url(self):
+        targets = resolve_purge_targets('site', '', self.SINGLE, None)
+        assert targets == [{'label': 'https://dashpadd.com',
+                            'site_url': 'https://dashpadd.com', 'post_id': None}]
+
+    def test_file_scope_uses_top_level_site_url(self, tmp_path):
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: 77\n---\nbody', encoding='utf-8')
+        targets = resolve_purge_targets('file', str(f), self.SINGLE, None)
+        assert targets == [{'label': '#77', 'site_url': 'https://dashpadd.com', 'post_id': 77}]
+
+    def test_network_scope_rejected(self):
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('network', None, self.SINGLE, None, '/p/.wp-poster.json')
+        assert '/p/.wp-poster.json' in str(exc.value)
+
+    def test_missing_site_url_raises(self):
+        with pytest.raises(PurgeConfigError):
+            resolve_purge_targets('site', '', {'wp_cli_alias': '@x'}, None)
+
+
+class TestResolvePurgeTargetsValidation:
+    def test_incomplete_network_entry_raises_before_any_command(self, tmp_path):
+        """resolve_site_identity yields site_url=None for an incomplete entry."""
+        config = {'network': {'wp_cli_alias': '@x', 'sites': {
+            'de': {'content_path': 'de/content/'},   # no site_url / locale / blog_id
+        }}}
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('site', 'de', config, str(tmp_path))
+        assert 'site_url' in str(exc.value)
+
+    def test_non_http_site_url_rejected(self, tmp_path):
+        config = {'network': {'wp_cli_alias': '@x', 'sites': {
+            'de': {'content_path': 'de/content/', 'site_url': 'ftp://e.com', 'blog_id': 3},
+        }}}
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('site', 'de', config, str(tmp_path))
+        assert 'site_url' in str(exc.value)
+
+    def test_non_integer_post_id_rejected(self, tmp_path):
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: "not-a-number"\n---\nbody', encoding='utf-8')
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_purge_targets('file', str(f), {'site_url': 'https://x.com'}, None)
+        assert 'post id' in str(exc.value)

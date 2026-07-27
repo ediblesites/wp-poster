@@ -1253,6 +1253,114 @@ def resolve_wp_cli_transport(config, config_path):
     return ['wp', f'--ssh={alias}']
 
 
+def _validate_purge_target(target, source):
+    """Reject a target that could not be safely turned into a wp-cli command.
+
+    Runs before any subprocess, so a half-configured network entry fails with
+    a readable message instead of shipping `--url=None` to the server.
+    """
+    site_url = target['site_url']
+    if not isinstance(site_url, str) or not site_url.startswith(('http://', 'https://')):
+        raise PurgeConfigError(
+            f"Target '{target['label']}' has an unusable site_url ({site_url!r}) "
+            f"in {source}. Expected an http(s) URL."
+        )
+    post_id = target['post_id']
+    if post_id is not None:
+        if isinstance(post_id, bool) or not isinstance(post_id, int) or post_id <= 0:
+            raise PurgeConfigError(
+                f"Target '{target['label']}' has an unusable post id ({post_id!r}). "
+                "Expected a positive integer."
+            )
+    return target
+
+
+def resolve_purge_targets(scope, value, config, project_root=None, config_path=None):
+    """Resolve a purge scope to an ordered list of validated targets.
+
+    scope: 'file' | 'site' | 'network'
+    value: file path for 'file'; site key (or '' meaning "the configured
+           site") for 'site'; ignored for 'network'.
+
+    Returns [{'label': str, 'site_url': str, 'post_id': int | None}, ...]
+    where a post_id of None means "purge this whole site".
+
+    Every failure mode raises PurgeConfigError naming what to fix, rather than
+    guessing at a target - purging the wrong blog is worse than not purging.
+    """
+    source = config_path or 'the loaded config'
+    network = config.get('network') or {}
+    sites = network.get('sites') or {}
+
+    if scope == 'network':
+        if not sites:
+            raise PurgeConfigError(
+                f"--network needs a network config, but {source} has no 'network' key. "
+                "Use --site for a single-site project."
+            )
+        targets = []
+        for site_key, site_info in sites.items():
+            identity = resolve_site_identity(project_root, site_key, site_info)
+            targets.append(_validate_purge_target({
+                'label': site_key,
+                'site_url': identity['site_url'],
+                'post_id': None,
+            }, source))
+        return targets
+
+    if scope == 'site':
+        if not sites:
+            site_url = config.get('site_url')
+            if not site_url:
+                raise PurgeConfigError(f"No site_url in {source}; cannot resolve --site.")
+            return [_validate_purge_target(
+                {'label': site_url, 'site_url': site_url, 'post_id': None}, source)]
+        valid = ', '.join(sorted(sites))
+        if not value:
+            raise PurgeConfigError(
+                f"--site requires a site key on a network project. Valid keys: {valid}"
+            )
+        if value not in sites:
+            raise PurgeConfigError(f"Unknown site '{value}'. Valid keys: {valid}")
+        identity = resolve_site_identity(project_root, value, sites[value])
+        return [_validate_purge_target(
+            {'label': value, 'site_url': identity['site_url'], 'post_id': None}, source)]
+
+    # scope == 'file'
+    try:
+        frontmatter = read_frontmatter(value)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        raise PurgeConfigError(f"Could not read frontmatter from {value}: {e}")
+
+    post_id = frontmatter.get('id')
+    if not post_id:
+        raise PurgeConfigError(
+            f"{value} has no post id in its frontmatter, so it has not been "
+            "published yet and nothing is cached for it."
+        )
+
+    if sites:
+        site_key, site_info = find_site_for_file(project_root, config, value)
+        if site_key is None:
+            configured = ', '.join(sorted(s['content_path'] for s in sites.values()))
+            raise PurgeConfigError(
+                f"{value} is not inside any configured content_path ({configured}) "
+                f"from {source}, so its site could not be determined."
+            )
+        identity = resolve_site_identity(project_root, site_key, site_info)
+        return [_validate_purge_target({
+            'label': f'{site_key} #{post_id}',
+            'site_url': identity['site_url'],
+            'post_id': post_id,
+        }, source)]
+
+    site_url = config.get('site_url')
+    if not site_url:
+        raise PurgeConfigError(f"No site_url in {source}; cannot resolve --file.")
+    return [_validate_purge_target(
+        {'label': f'#{post_id}', 'site_url': site_url, 'post_id': post_id}, source)]
+
+
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
     """Resolve format: CLI > frontmatter > config > default(raw)"""
     if cli_raw:
