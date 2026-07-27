@@ -166,7 +166,7 @@ class TestFindConfigForPurge:
         assert project_root is None
 
     def test_no_config_anywhere_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(wp_post, '_GLOBAL_CONFIG_PATHS', lambda: [])
+        monkeypatch.setattr(wp_post, '_global_config_paths', lambda: [])
         with pytest.raises(PurgeConfigError) as exc:
             find_config_for_purge(str(tmp_path / 'nothing' / 'here.md'))
         assert '.wp-poster.json' in str(exc.value)
@@ -255,7 +255,7 @@ def read_frontmatter(filepath):
     return {}
 
 
-def _GLOBAL_CONFIG_PATHS():
+def _global_config_paths():
     """Global config locations, in precedence order.
 
     Deliberately excludes the cwd-relative lookup that load_config() performs:
@@ -305,7 +305,7 @@ def find_config_for_purge(anchor_path):
     if nearest:
         return nearest[0], nearest[1], None
 
-    for path in _GLOBAL_CONFIG_PATHS():
+    for path in _global_config_paths():
         if path.exists():
             try:
                 with open(path, 'r') as f:
