@@ -1998,3 +1998,127 @@ class TestMainMslsExit:
         payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
         assert payload["success"] is True
         assert "msls_failures" not in payload
+
+
+# ===========================================================================
+# Cache purging: config discovery and transport
+# ===========================================================================
+
+read_frontmatter = wp_post.read_frontmatter
+find_config_for_purge = wp_post.find_config_for_purge
+resolve_wp_cli_transport = wp_post.resolve_wp_cli_transport
+PurgeConfigError = wp_post.PurgeConfigError
+
+
+_PURGE_SITES = [
+    {'key': 'en', 'site_url': 'https://e.com', 'locale': 'en_US', 'blog_id': 1},
+    {'key': 'de', 'site_url': 'https://e.com/de', 'locale': 'de_DE', 'blog_id': 3},
+]
+
+
+class TestReadFrontmatter:
+    def test_reads_frontmatter(self, tmp_path):
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\nid: 412\n---\nbody', encoding='utf-8')
+        assert read_frontmatter(str(f)) == {'title': 'T', 'id': 412}
+
+    def test_returns_empty_without_frontmatter(self, tmp_path):
+        f = tmp_path / 'a.md'
+        f.write_text('just body', encoding='utf-8')
+        assert read_frontmatter(str(f)) == {}
+
+    def test_parse_frontmatter_only_still_works(self, wp, tmp_path):
+        f = tmp_path / 'a.md'
+        f.write_text('---\ntitle: T\n---\nbody', encoding='utf-8')
+        assert wp.parse_frontmatter_only(str(f)) == {'title': 'T'}
+
+
+class TestFindConfigForPurge:
+    def test_finds_config_beside_the_file_not_the_cwd(self, tmp_path, monkeypatch):
+        """Regression: config must be anchored at the target file.
+
+        load_config() walks up from the CWD, so an absolute --file path from
+        another project would otherwise purge whichever site the shell is
+        sitting in.
+        """
+        project = tmp_path / 'project'
+        (project / 'content').mkdir(parents=True)
+        (project / '.wp-poster.json').write_text(
+            json.dumps({'site_url': 'https://right.com', 'wp_cli_alias': '@right'}))
+        target = project / 'content' / 'post.md'
+        target.write_text('---\ntitle: T\nid: 5\n---\nbody', encoding='utf-8')
+
+        decoy = tmp_path / 'decoy'
+        decoy.mkdir()
+        (decoy / '.wp-poster.json').write_text(json.dumps({'site_url': 'https://wrong.com'}))
+        monkeypatch.chdir(decoy)
+
+        config, config_path, project_root = find_config_for_purge(str(target))
+        assert config['site_url'] == 'https://right.com'
+        assert config_path == str(project / '.wp-poster.json')
+        assert project_root is None
+
+    def test_network_config_sets_project_root(self, tmp_path):
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        target = root / 'de' / 'content' / 'p.md'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('---\ntitle: T\nid: 1\n---\nbody', encoding='utf-8')
+
+        config, config_path, project_root = find_config_for_purge(str(target))
+        assert 'network' in config
+        assert project_root == str(root)
+
+    def test_network_config_wins_over_nearer_per_site_config(self, tmp_path):
+        """Legacy layout: a per-site config must not shadow the network map."""
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        (root / 'de' / '.wp-poster.json').write_text(
+            json.dumps({'site_url': 'https://e.com/de', 'locale': 'de_DE', 'blog_id': 3}))
+        target = root / 'de' / 'content' / 'p.md'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('---\ntitle: T\nid: 1\n---\nbody', encoding='utf-8')
+
+        config, _path, project_root = find_config_for_purge(str(target))
+        assert 'network' in config
+        assert project_root == str(root)
+
+    def test_accepts_a_directory_anchor(self, tmp_path):
+        (tmp_path / '.wp-poster.json').write_text(json.dumps({'site_url': 'https://x.com'}))
+        config, _path, project_root = find_config_for_purge(str(tmp_path))
+        assert config['site_url'] == 'https://x.com'
+        assert project_root is None
+
+    def test_no_config_anywhere_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wp_post, '_global_config_paths', lambda: [])
+        with pytest.raises(PurgeConfigError) as exc:
+            find_config_for_purge(str(tmp_path / 'nothing' / 'here.md'))
+        assert '.wp-poster.json' in str(exc.value)
+
+
+class TestResolveWpCliTransport:
+    PATH = '/p/.wp-poster.json'
+
+    def test_network_alias(self):
+        config = {'network': {'wp_cli_alias': '@payperfax', 'sites': {}}}
+        assert resolve_wp_cli_transport(config, self.PATH) == ['wp', '@payperfax']
+
+    def test_top_level_alias(self):
+        assert resolve_wp_cli_transport({'wp_cli_alias': '@dashpadd'}, self.PATH) == ['wp', '@dashpadd']
+
+    def test_ssh_target_becomes_ssh_flag(self):
+        config = {'wp_cli_alias': 'dash/sites/dashpadd.com/files'}
+        assert resolve_wp_cli_transport(config, self.PATH) == [
+            'wp', '--ssh=dash/sites/dashpadd.com/files']
+
+    def test_network_alias_wins_over_top_level(self):
+        config = {'wp_cli_alias': 'ignored', 'network': {'wp_cli_alias': '@net', 'sites': {}}}
+        assert resolve_wp_cli_transport(config, self.PATH) == ['wp', '@net']
+
+    def test_missing_alias_names_the_config_file(self):
+        with pytest.raises(PurgeConfigError) as exc:
+            resolve_wp_cli_transport({'site_url': 'https://example.com'}, self.PATH)
+        assert 'wp_cli_alias' in str(exc.value)
+        assert self.PATH in str(exc.value)
+
+    def test_non_string_alias_rejected(self):
+        with pytest.raises(PurgeConfigError):
+            resolve_wp_cli_transport({'wp_cli_alias': 123}, self.PATH)

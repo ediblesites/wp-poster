@@ -67,13 +67,7 @@ class WordPressPost:
         
     def parse_frontmatter_only(self, filepath):
         """Parse just the frontmatter without processing content"""
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        if content.startswith('---'):
-            parts = content.split('---', 2)
-            if len(parts) >= 3:
-                return load_frontmatter(parts[1]) or {}
-        return {}
+        return read_frontmatter(filepath)
 
     def parse_markdown_file(self, filepath):
         """Parse markdown file with frontmatter and convert to Gutenberg blocks"""
@@ -1133,6 +1127,122 @@ def write_msls_links(wp_cli_alias, current_post, siblings):
         results.append(status)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Cache purging (SpinupWP page cache, via the plugin's WP-CLI commands)
+# ---------------------------------------------------------------------------
+
+_PURGE_TIMEOUT = 30
+
+
+class PurgeConfigError(Exception):
+    """A purge could not be resolved from configuration.
+
+    Raised before any subprocess is spawned, so a misconfigured run costs
+    nothing and reports the exact file, key or value to fix.
+    """
+
+
+def read_frontmatter(filepath):
+    """Parse just the frontmatter of a file, returning {} when it has none."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if content.startswith('---'):
+        parts = content.split('---', 2)
+        if len(parts) >= 3:
+            return load_frontmatter(parts[1]) or {}
+    return {}
+
+
+def _global_config_paths():
+    """Global config locations, in precedence order.
+
+    Deliberately excludes the cwd-relative lookup that load_config() performs:
+    a purge must never be steered by which directory the shell happens to be
+    in. Defined as a function so tests can substitute it.
+    """
+    script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    return [
+        Path.home() / '.wp-poster.json',
+        Path.home() / '.config/wp-poster/config.json',
+        script_dir / '.wp-poster.json',
+    ]
+
+
+def find_config_for_purge(anchor_path):
+    """Locate the config governing anchor_path.
+
+    Returns (config, config_path, project_root). project_root is the config's
+    directory when the config describes a network, otherwise None.
+
+    Anchoring at the target file rather than the working directory is what
+    makes `wp-post --purge --file /other/project/post.md` purge the site that
+    file belongs to, instead of whatever project the shell is sitting in. A
+    network config found anywhere up the tree beats a nearer non-network one,
+    so the legacy per-site config layout cannot shadow the network map.
+    """
+    start = Path(anchor_path).resolve()
+    current = start if start.is_dir() else start.parent
+    nearest = None
+
+    while True:
+        candidate = current / '.wp-poster.json'
+        if candidate.exists():
+            try:
+                with open(candidate, 'r') as f:
+                    config = json.load(f)
+            except (OSError, ValueError) as e:
+                raise PurgeConfigError(f"Could not read {candidate}: {e}")
+            if 'network' in config:
+                return config, str(candidate), str(current)
+            if nearest is None:
+                nearest = (config, str(candidate))
+        if current.parent == current:
+            break
+        current = current.parent
+
+    if nearest:
+        return nearest[0], nearest[1], None
+
+    for path in _global_config_paths():
+        if path.exists():
+            try:
+                with open(path, 'r') as f:
+                    return json.load(f), str(path), None
+            except (OSError, ValueError) as e:
+                raise PurgeConfigError(f"Could not read {path}: {e}")
+
+    raise PurgeConfigError(
+        f"No .wp-poster.json found from {start} upward, or in any global location."
+    )
+
+
+def resolve_wp_cli_transport(config, config_path):
+    """Return the argv prefix for wp-cli calls, e.g. ['wp', '@payperfax'].
+
+    The alias is read from network.wp_cli_alias when the config describes a
+    network (where the key already exists for MSLS linking), otherwise from a
+    top-level wp_cli_alias. A value starting with '@' is a wp-cli alias
+    resolved through ~/.wp-cli/config.yml; anything else is used as an --ssh=
+    target, so a project can be self-contained with no external wp-cli config.
+    """
+    alias = (config.get('network') or {}).get('wp_cli_alias') or config.get('wp_cli_alias')
+    if not alias:
+        raise PurgeConfigError(
+            f"No wp_cli_alias in {config_path}. Add one, either as a wp-cli alias\n"
+            "resolved through ~/.wp-cli/config.yml:\n"
+            '  "wp_cli_alias": "@myalias"\n'
+            "or as an ssh target, which needs no wp-cli config at all:\n"
+            '  "wp_cli_alias": "myhost/sites/example.com/files"'
+        )
+    if not isinstance(alias, str):
+        raise PurgeConfigError(
+            f"wp_cli_alias in {config_path} must be a string, got {type(alias).__name__}."
+        )
+    if alias.startswith('@'):
+        return ['wp', alias]
+    return ['wp', f'--ssh={alias}']
 
 
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
