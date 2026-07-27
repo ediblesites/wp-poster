@@ -2122,3 +2122,22 @@ class TestResolveWpCliTransport:
     def test_non_string_alias_rejected(self):
         with pytest.raises(PurgeConfigError):
             resolve_wp_cli_transport({'wp_cli_alias': 123}, self.PATH)
+
+
+class TestFindSiteForFileBoundaries:
+    NET = {'network': {'sites': {
+        'de': {'content_path': 'de/content/', 'site_url': 'https://e/de', 'blog_id': 3},
+    }}}
+
+    def test_sibling_directory_sharing_a_prefix_does_not_match(self):
+        key, info = find_site_for_file('/project', self.NET, '/project/de/content-evil/post.md')
+        assert key is None
+        assert info is None
+
+    def test_exact_content_root_still_matches(self):
+        key, _info = find_site_for_file('/project', self.NET, '/project/de/content/post.md')
+        assert key == 'de'
+
+    def test_nested_path_still_matches(self):
+        key, _info = find_site_for_file('/project', self.NET, '/project/de/content/a/b/post.md')
+        assert key == 'de'

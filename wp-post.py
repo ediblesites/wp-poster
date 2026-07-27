@@ -978,13 +978,21 @@ def resolve_site_identity(project_root, site_key, site_info):
 def find_site_for_file(project_root, network_config, filepath):
     """Return (site_key, site_info) for the network site whose content_path
     contains filepath, or (None, None) if no site matches.
+
+    Containment is checked on path boundaries rather than string prefixes: a
+    file under 'de/content-evil/' must not match the site rooted at
+    'de/content/', which a startswith comparison would wrongly accept once
+    the trailing slash is normalised away.
     """
-    file_abs = os.path.abspath(filepath)
+    file_path = Path(filepath).resolve()
     sites = network_config.get('network', {}).get('sites', {})
     for site_key, site_info in sites.items():
-        content_abs = os.path.abspath(os.path.join(project_root, site_info['content_path']))
-        if file_abs.startswith(content_abs):
-            return site_key, site_info
+        content_root = Path(project_root, site_info['content_path']).resolve()
+        try:
+            file_path.relative_to(content_root)
+        except ValueError:
+            continue
+        return site_key, site_info
     return None, None
 
 
