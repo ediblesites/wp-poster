@@ -2093,6 +2093,28 @@ class TestFindConfigForPurge:
             find_config_for_purge(str(tmp_path / 'nothing' / 'here.md'))
         assert '.wp-poster.json' in str(exc.value)
 
+    def test_global_network_config_sets_project_root(self, tmp_path, monkeypatch):
+        """Regression: a global fallback config can itself have a 'network'
+        key. project_root must then point at its directory, exactly as the
+        walk-up branch does, or resolve_site_identity's os.path.join(None, ..)
+        raises an uncaught TypeError later."""
+        global_dir = tmp_path / 'global'
+        global_dir.mkdir()
+        global_config = global_dir / '.wp-poster.json'
+        global_config.write_text(json.dumps({
+            'network': {'wp_cli_alias': '@testsite', 'sites': {
+                'en': {'content_path': 'en/content/', 'site_url': 'https://e.com',
+                       'locale': 'en_US', 'blog_id': 1},
+            }},
+        }))
+        monkeypatch.setattr(wp_post, '_global_config_paths', lambda: [global_config])
+
+        anchor = tmp_path / 'elsewhere' / 'post.md'
+        config, config_path, project_root = find_config_for_purge(str(anchor))
+        assert 'network' in config
+        assert config_path == str(global_config)
+        assert project_root == str(global_dir)
+
 
 class TestResolveWpCliTransport:
     PATH = '/p/.wp-poster.json'
@@ -2510,8 +2532,14 @@ class TestHandlePurge:
 
     @patch('wp_post.spinupwp_purge', return_value=(True, None))
     def test_file_scope_ignores_cwd_config(self, mock_purge, tmp_path, monkeypatch):
-        """Regression: the target file's project, not the shell's, decides the site."""
-        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        """Regression: the target file's project, not the shell's, decides the site.
+
+        The network root and the decoy must live in separate subtrees. If the
+        decoy were nested inside the network root, walking up from it would
+        still reach the network config (network-beats-nearest), so the decoy
+        would never get a chance to win and the test would pass either way.
+        """
+        root = _scaffold_network_map(tmp_path / 'net', _PURGE_SITES)
         f = root / 'de' / 'content' / 'p' / 'index.md'
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text('---\ntitle: T\nid: 412\n---\nbody', encoding='utf-8')
@@ -2560,9 +2588,17 @@ class TestHandlePurge:
         monkeypatch.chdir(tmp_path)
         assert handle_purge(_PurgeArgs()) == 1
 
-    def test_two_scope_selectors_exit_one(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+    @patch('wp_post.spinupwp_purge', return_value=(True, None))
+    def test_two_scope_selectors_exit_one(self, mock_purge, tmp_path, monkeypatch):
+        """Regression: with a config that could actually satisfy either scope,
+        rejecting must come from the scope-count check itself, not from config
+        resolution failing anyway. A bare tmp_path with no config would exit 1
+        either way, masking a mutation that lets multiple scopes through."""
+        root = _scaffold_network_map(tmp_path, _PURGE_SITES)
+        monkeypatch.chdir(root)
+
         assert handle_purge(_PurgeArgs(purge_site='de', purge_network=True)) == 1
+        mock_purge.assert_not_called()
 
     @patch('wp_post.spinupwp_purge', return_value=(True, None))
     def test_bare_site_scope_purges_single_site_config(self, mock_purge, tmp_path, monkeypatch):
@@ -2609,26 +2645,33 @@ class TestMainPurgeDispatch:
         assert exc.value.code == 3
         assert mock_handle.called
 
-    def test_site_selector_without_purge_flag_errors_instead_of_posting(self, monkeypatch):
+    def test_site_selector_without_purge_flag_errors_instead_of_posting(self, monkeypatch, capsys):
         """Regression: --site now exact-matches the new purge flag, shadowing
         what used to be an unambiguous abbreviation of --site-url. Silently
         discarding the override and posting to the config's site would be a
-        wrong-target publish; it must fail loudly instead."""
+        wrong-target publish; it must fail loudly instead.
+
+        Asserts the actual message, not just exit code 1: without the guard,
+        main() falls through to the file-existence check and exits 1 for
+        "File 'post.md' not found" - same exit code, wrong reason."""
         monkeypatch.setattr(sys, 'argv', ['wp-post', '--site', 'https://override.com', 'post.md'])
         with pytest.raises(SystemExit) as exc:
             wp_post.main()
         assert exc.value.code == 1
+        assert "only valid with --purge" in capsys.readouterr().err
 
-    def test_network_selector_without_purge_flag_errors_instead_of_posting(self, monkeypatch):
+    def test_network_selector_without_purge_flag_errors_instead_of_posting(self, monkeypatch, capsys):
         """Regression: --network post.md --test used to silently ignore
         --network and run a normal post in test mode."""
         monkeypatch.setattr(sys, 'argv', ['wp-post', '--network', 'post.md', '--test'])
         with pytest.raises(SystemExit) as exc:
             wp_post.main()
         assert exc.value.code == 1
+        assert "only valid with --purge" in capsys.readouterr().err
 
-    def test_file_selector_without_purge_flag_errors(self, monkeypatch):
+    def test_file_selector_without_purge_flag_errors(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, 'argv', ['wp-post', '--file', 'post.md'])
         with pytest.raises(SystemExit) as exc:
             wp_post.main()
         assert exc.value.code == 1
+        assert "only valid with --purge" in capsys.readouterr().err

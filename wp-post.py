@@ -1217,9 +1217,14 @@ def find_config_for_purge(anchor_path):
         if path.exists():
             try:
                 with open(path, 'r') as f:
-                    return json.load(f), str(path), None
+                    config = json.load(f)
             except (OSError, ValueError) as e:
                 raise PurgeConfigError(f"Could not read {path}: {e}")
+            # A global config can itself describe a network; project_root must
+            # then point at its directory, mirroring the walk-up branch above,
+            # or resolve_site_identity's os.path.join(None, ...) raises.
+            project_root = str(path.parent) if 'network' in config else None
+            return config, str(path), project_root
 
     raise PurgeConfigError(
         f"No .wp-poster.json found from {start} upward, or in any global location."
