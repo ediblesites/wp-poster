@@ -286,6 +286,15 @@ clear; see `docs/superpowers/specs/2026-07-27-cache-purge-design.md`.
 
 This repo includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that teaches Claude how to publish and update posts using wp-post - covering frontmatter authoring, format selection, callouts, and the create-then-update-local-file loop.
 
-`./install.sh` installs it to `~/.claude/skills/wp-post/` alongside the CLI, so there is one install step for both. Then use `/wp-post`, or just ask Claude to publish a file to WordPress.
+`install.sh` installs the skill into `.claude/skills/wp-post/` **of the directory you run it from**, so each content project gets its own copy:
 
-The skill is copied, not symlinked. Editing `skills/wp-post/SKILL.md` does not change the installed copy until you re-run `./install.sh`.
+```bash
+cd ~/projects/my-content-site
+~/projects/wp-poster/install.sh
+```
+
+The CLI half is system-wide and idempotent, so re-running from another project only adds the skill there. Then use `/wp-post`, or just ask Claude to publish a file to WordPress.
+
+The skill is copied, not symlinked. Editing `skills/wp-post/SKILL.md` does not change any installed copy until you re-run `install.sh` in that project.
+
+Re-running also removes installs from the two mechanisms this replaces - a user-level `~/.claude/skills/wp-post/` and a marketplace-installed `wp-poster@ediblesites` plugin - since a stale copy silently teaches Claude the old behaviour.

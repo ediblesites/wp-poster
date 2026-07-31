@@ -30,3 +30,7 @@ Thumbs.db
 dist/
 # Subagent-driven development scratch
 .superpowers/
+
+# install.sh output. Running it from this repo copies skills/wp-post here,
+# which would otherwise show up as an untracked duplicate of the source.
+.claude/skills/

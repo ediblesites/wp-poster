@@ -40,20 +40,59 @@ fi
 # Create per-user config directory for the invoking user
 mkdir -p "$USER_HOME/.config/wp-poster"
 
-# Install the Claude Code skill for the invoking user
-echo "Installing Claude Code skill to $USER_HOME/.claude/skills/wp-post..."
-mkdir -p "$USER_HOME/.claude/skills"
-rm -rf "$USER_HOME/.claude/skills/wp-post"
-cp -r "$SRC_DIR/skills/wp-post" "$USER_HOME/.claude/skills/wp-post"
+# Remove installs from the two mechanisms this script replaces. Left in
+# place they shadow or duplicate the project-scoped skill below, and a
+# stale copy is worse than none - it silently teaches Claude the old
+# behaviour.
+if [ -d "$USER_HOME/.claude/skills/wp-post" ]; then
+    echo "Removing previous user-level skill at $USER_HOME/.claude/skills/wp-post..."
+    rm -rf "$USER_HOME/.claude/skills/wp-post"
+fi
+
+PLUGIN_REGISTRY="$USER_HOME/.claude/plugins/installed_plugins.json"
+if [ -f "$PLUGIN_REGISTRY" ]; then
+    python3 - "$PLUGIN_REGISTRY" "$USER_HOME" <<'PYEOF'
+import json, shutil, sys
+from pathlib import Path
+
+registry, home = Path(sys.argv[1]), Path(sys.argv[2])
+try:
+    data = json.loads(registry.read_text())
+except (OSError, ValueError):
+    sys.exit(0)  # not ours to repair
+
+entries = data.get("plugins", {}).pop("wp-poster@ediblesites", None)
+if not entries:
+    sys.exit(0)
+
+for entry in entries:
+    path = entry.get("installPath")
+    if path and Path(path).is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+
+registry.write_text(json.dumps(data, indent=2) + "\n")
+print("Removed previously installed wp-poster plugin "
+      f"({len(entries)} registration(s)). Restart Claude Code to pick this up.")
+PYEOF
+fi
+
+# Install the Claude Code skill into the project this was run from, not
+# the user's home, so each content project pins its own copy.
+PROJECT_SKILL_DIR="$PWD/.claude/skills/wp-post"
+echo "Installing Claude Code skill to $PROJECT_SKILL_DIR..."
+mkdir -p "$PWD/.claude/skills"
+rm -rf "$PROJECT_SKILL_DIR"
+cp -r "$SRC_DIR/skills/wp-post" "$PROJECT_SKILL_DIR"
 if [ -n "$SUDO_USER" ]; then
-    chown -R "$SUDO_USER" "$USER_HOME/.claude/skills/wp-post" "$USER_HOME/.config/wp-poster"
+    chown -R "$SUDO_USER" "$PWD/.claude" "$USER_HOME/.config/wp-poster"
 fi
 
 echo ""
 echo "✓ Installation complete!"
 echo ""
-echo "The wp-post Claude Code skill is installed for this user. Skill edits"
-echo "take effect on the next ./install.sh run, not immediately."
+echo "The wp-post skill is installed into $PWD/.claude/skills/."
+echo "Run this from another project directory to install it there too."
+echo "Skill edits take effect on the next install.sh run, not immediately."
 echo ""
 echo "To configure WordPress credentials, you can:"
 echo "1. Create a config file: ~/.wp-poster.json"
