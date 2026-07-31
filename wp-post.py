@@ -136,6 +136,10 @@ class WordPressPost:
                     timeout=15,
                 )
             except requests.RequestException as e:
+                # A network-level failure almost certainly repeats against
+                # the same host/credentials on the next rest_base, so we
+                # stop here rather than eating a second 15s timeout for no
+                # benefit.
                 print(f"⚠ Bookmark lookup failed for {target}: {e}", file=sys.stderr)
                 break
             if response.status_code != 200:
@@ -144,9 +148,25 @@ class WordPressPost:
                 items = response.json()
             except ValueError:
                 continue
-            if items:
-                result = self._bookmark_card_data(items[0])
-                break
+            if not isinstance(items, list):
+                print(
+                    f"⚠ Bookmark lookup for {target} got an unexpected {rest_base} "
+                    f"response (expected a list, got {type(items).__name__}); skipping",
+                    file=sys.stderr,
+                )
+                continue
+            if not items:
+                continue
+            if not isinstance(items[0], dict):
+                print(
+                    f"⚠ Bookmark lookup for {target} got an unexpected {rest_base} "
+                    f"response (list item is {type(items[0]).__name__}, not an "
+                    f"object); skipping",
+                    file=sys.stderr,
+                )
+                continue
+            result = self._bookmark_card_data(items[0])
+            break
 
         self._bookmark_cache[slug] = result
         return result

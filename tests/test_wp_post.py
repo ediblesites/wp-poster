@@ -2747,6 +2747,63 @@ class TestBookmarkResolution:
         mock_get.side_effect = requests.RequestException("down")
         assert wp._resolve_bookmark("my-other-post") is None
 
+    @patch('wp_post.requests.get')
+    def test_dict_body_falls_back_to_pages_and_warns(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, {"code": "rest_no_route"}),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert "my-other-post" in capsys.readouterr().err
+
+    @patch('wp_post.requests.get')
+    def test_string_body_falls_back_to_pages_and_warns(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, "not a list"),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_list_of_non_dict_falls_back_to_pages_and_warns(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, [None]),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_empty_list_falls_back_to_pages_without_warning(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, []),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert capsys.readouterr().err == ""
+
+    @patch('wp_post.requests.get')
+    def test_malformed_body_on_both_endpoints_returns_none_without_raising(self, mock_get, wp, mock_response, capsys):
+        mock_get.return_value = mock_response(200, {"code": "rest_no_route"})
+        assert wp._resolve_bookmark("my-other-post") is None
+        assert mock_get.call_count == 2
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_malformed_result_is_still_cached(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, {"code": "rest_no_route"})
+        wp._resolve_bookmark("my-other-post")
+        wp._resolve_bookmark("my-other-post")
+        assert mock_get.call_count == 2
+
 
 class TestCalloutWiring:
     def test_resolver_is_passed_to_the_converter(self, wp, md_file):
