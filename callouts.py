@@ -119,22 +119,14 @@ DEFAULT_CONFIG = {
     "background": "tertiary",
     "padding": "1.25rem",
     "types": {
-        "note": {"label": "Note", "color": "#0969da", "icon": None},
-        "tip": {"label": "Tip", "color": "#1a7f37", "icon": None},
-        "important": {"label": "Important", "color": "#8250df", "icon": None},
-        "warning": {"label": "Warning", "color": "#9a6700", "icon": None},
-        "caution": {"label": "Caution", "color": "#d1242f", "icon": None},
-        "summary": {"label": "In short", "color": "primary-alt-accent", "icon": None},
-        "faq": {
-            "label": "Frequently asked questions",
-            "color": "primary-alt-accent",
-            "icon": None,
-        },
-        "bookmark": {
-            "label": "Read next",
-            "color": "primary-alt-accent",
-            "icon": None,
-        },
+        "note": {"color": "#0969da", "icon": None},
+        "tip": {"color": "#1a7f37", "icon": None},
+        "important": {"color": "#8250df", "icon": None},
+        "warning": {"color": "#9a6700", "icon": None},
+        "caution": {"color": "#d1242f", "icon": None},
+        "summary": {"color": "primary-alt-accent", "icon": None},
+        "faq": {"color": "primary-alt-accent", "icon": None},
+        "bookmark": {"color": "primary-alt-accent", "icon": None},
     },
 }
 
@@ -247,19 +239,28 @@ def _clean_str(value, fallback):
     return fallback
 
 
-def merge_config(user_config=None, warn=None):
-    """User config merged over the built-in defaults.
+def merge_config(user_config=None, warn=None, locale=None):
+    """User config merged over the built-in defaults, for one language.
 
     Every field is optional; a partial override touches only what it
     names. Config arrives from hand-edited JSON, so every value may be
     the wrong type - this function never raises, it warns and falls
     back, because a bad config must not fail a publish.
+
+    Labels are not configurable. They come from `_LABELS`, keyed by the
+    destination site's locale, because a network project publishes every
+    language from one root config and has nowhere to write a per-language
+    label.
     """
     warn = warn or _default_warn
+    labels = _LABELS[resolve_lang(locale, warn)]
     merged = {
         "background": DEFAULT_CONFIG["background"],
         "padding": DEFAULT_CONFIG["padding"],
-        "types": {name: dict(spec) for name, spec in DEFAULT_CONFIG["types"].items()},
+        "types": {
+            name: dict(spec, label=labels[name])
+            for name, spec in DEFAULT_CONFIG["types"].items()
+        },
     }
     if not user_config:
         return merged
@@ -290,7 +291,11 @@ def merge_config(user_config=None, warn=None):
             continue
 
         target = merged["types"][key]
-        target["label"] = _clean_str(overrides.get("label"), target["label"])
+        if "label" in overrides:
+            warn(
+                f"callouts.types.{name}.label is no longer configurable; "
+                "labels come from the site's locale"
+            )
         target["color"] = _clean_str(overrides.get("color"), target["color"])
         if "icon" in overrides:
             # "" is meaningful (disables the icon), so _clean_str is wrong

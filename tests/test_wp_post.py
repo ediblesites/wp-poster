@@ -2893,11 +2893,11 @@ class TestCalloutWiring:
     def test_callout_config_reaches_the_converter(self, md_file):
         poster = wp_post.WordPressPost(
             "https://example.com", "u", "p",
-            callout_config={"types": {"note": {"label": "Hinweis"}}},
+            callout_config={"types": {"note": {"color": "primary"}}},
         )
         path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
         _, content = poster.parse_markdown_file(path)
-        assert "Hinweis</strong>" in content
+        assert "var:preset|color|primary" in content
 
 
 class TestSvgStrippingDetection:
