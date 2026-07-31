@@ -341,6 +341,13 @@ def _label_block(type_name, cfg):
     )
 
 
+# The percentage width of the image column in a resolved bookmark's
+# core/media-text card. Read from here for both the block's mediaWidth
+# attribute and the grid-template-columns style core/media-text's own
+# save() derives from it, so the two can't drift apart.
+_BOOKMARK_MEDIA_WIDTH = 30
+
+
 def _bookmark_body(data, cfg):
     """Label, linked title, and excerpt - shared by both resolved cards."""
     title = escape(str(data.get("title", "") or ""), quote=False)
@@ -496,18 +503,26 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         if isinstance(image_id, bool) or not isinstance(image_id, int):
             image_id = None
         title = escape(str(data.get("title", "") or ""), quote=True)
+        media_width = _BOOKMARK_MEDIA_WIDTH
         attrs = {
             "mediaType": "image",
-            "mediaWidth": 30,
+            "mediaWidth": media_width,
             "className": "is-callout is-callout-bookmark",
         }
         if image_id:
             attrs["mediaId"] = image_id
-        img_class = f' class="wp-image-{image_id}"' if image_id else ""
+        # core/media-text's save() derives both of these from the block's
+        # own attributes (mediaWidth, mediaId) - they aren't decorative,
+        # Gutenberg's block validator re-derives the expected markup from
+        # the attributes and rejects the block if it doesn't match. The
+        # style is only added when mediaWidth differs from core's default
+        # of 50, which ours always does, so it's unconditional here.
+        style = f' style="grid-template-columns:{media_width}% auto"'
+        img_class = f' class="wp-image-{image_id} size-full"' if image_id else ""
         return (
             f"<!-- wp:media-text {json.dumps(attrs, separators=(',', ':'))} -->\n"
             '<div class="wp-block-media-text is-stacked-on-mobile is-callout '
-            'is-callout-bookmark">\n'
+            f'is-callout-bookmark"{style}>\n'
             '<figure class="wp-block-media-text__media">'
             f'<img src="{image_url}" alt="{title}"{img_class}/></figure>\n'
             '<div class="wp-block-media-text__content">\n'

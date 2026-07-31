@@ -401,8 +401,37 @@ class TestBookmark:
             bookmark_resolver=lambda target: FULL_BOOKMARK,
         )
         assert "wp:media-text" in result
-        assert 'class="wp-image-123"' in result
+        assert 'class="wp-image-123 size-full"' in result
         assert "https://example.com/thumb.jpg" in result
+
+    def test_media_text_wrapper_style_matches_the_mediawidth_attribute(self):
+        # core/media-text's own save() derives the wrapper's
+        # grid-template-columns style from the block's mediaWidth
+        # attribute; Gutenberg's block validator re-derives the expected
+        # markup from the attributes and rejects the block if the two
+        # disagree, so the emitted percentage must match what's in the
+        # block comment's "mediaWidth" value exactly.
+        import json
+        import re as _re
+
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        raw = _re.search(r"<!-- wp:media-text (\{.*?\}) -->", result).group(1)
+        attrs = json.loads(raw)
+        assert f'style="grid-template-columns:{attrs["mediaWidth"]}% auto"' in result
+
+    def test_media_text_image_has_size_full_class(self):
+        # core/media-text's save() adds "size-{mediaSizeSlug}" alongside
+        # "wp-image-{id}" whenever an attachment id is present; the
+        # block's mediaSizeSlug attribute is never set here, so core
+        # defaults it to "full".
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        assert "size-full" in result
 
     def test_with_image_includes_title_excerpt_and_link(self):
         result = convert(
@@ -559,7 +588,7 @@ class TestBookmarkMalformedImageId:
     def test_genuine_int_still_produces_media_id_and_class(self):
         result = self._render(123)
         assert '"mediaId":123' in result
-        assert 'class="wp-image-123"' in result
+        assert 'class="wp-image-123 size-full"' in result
 
 
 class _Boom:
