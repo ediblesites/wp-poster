@@ -381,3 +381,83 @@ class TestFaqRendering:
         assert "Empty question?" not in result
         assert "Real question?" in result
         assert "no answer" in capsys.readouterr().err.lower()
+
+
+FULL_BOOKMARK = {
+    "title": "My Other Post",
+    "link": "https://example.com/my-other-post/",
+    "excerpt": "A short excerpt.",
+    "image_url": "https://example.com/thumb.jpg",
+    "image_id": 123,
+}
+
+NO_IMAGE_BOOKMARK = dict(FULL_BOOKMARK, image_url=None, image_id=None)
+
+
+class TestBookmark:
+    def test_with_image_uses_media_text(self):
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        assert "wp:media-text" in result
+        assert 'class="wp-image-123"' in result
+        assert "https://example.com/thumb.jpg" in result
+
+    def test_with_image_includes_title_excerpt_and_link(self):
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        assert '<a href="https://example.com/my-other-post/">My Other Post</a>' in result
+        assert "A short excerpt." in result
+        assert "Read next</strong>" in result
+
+    def test_without_image_falls_back_to_group(self):
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: NO_IMAGE_BOOKMARK,
+        )
+        assert "wp:media-text" not in result
+        assert "is-callout-bookmark" in result
+        assert "My Other Post" in result
+
+    def test_resolver_receives_the_raw_target(self):
+        seen = []
+
+        def resolver(target):
+            seen.append(target)
+            return FULL_BOOKMARK
+
+        convert("> [!BOOKMARK]\n> /my-other-post/", bookmark_resolver=resolver)
+        assert seen == ["/my-other-post/"]
+
+    def test_unresolved_target_warns_and_emits_link_card(self, capsys):
+        result = convert(
+            "> [!BOOKMARK]\n> /missing/",
+            bookmark_resolver=lambda target: None,
+        )
+        assert "is-callout-bookmark" in result
+        assert '<a href="/missing/">' in result
+        assert "could not resolve" in capsys.readouterr().err.lower()
+
+    def test_resolver_exception_warns_and_emits_link_card(self, capsys):
+        def resolver(target):
+            raise RuntimeError("network down")
+
+        result = convert("> [!BOOKMARK]\n> /missing/", bookmark_resolver=resolver)
+        assert '<a href="/missing/">' in result
+        assert "network down" in capsys.readouterr().err
+
+    def test_absent_resolver_emits_link_card_without_warning(self, capsys):
+        result = convert("> [!BOOKMARK]\n> /my-other-post/")
+        assert '<a href="/my-other-post/">' in result
+        assert capsys.readouterr().err == ""
+
+    def test_resolved_fields_are_escaped(self):
+        hostile = dict(FULL_BOOKMARK, title="Five < Six", excerpt="A & B")
+        result = convert(
+            "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: hostile
+        )
+        assert "Five &lt; Six" in result
+        assert "A &amp; B" in result

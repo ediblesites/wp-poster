@@ -341,6 +341,27 @@ def _label_block(type_name, cfg):
     )
 
 
+def _bookmark_body(data, cfg):
+    """Label, linked title, and excerpt - shared by both resolved cards."""
+    title = escape(str(data.get("title", "")), quote=False)
+    link = escape(str(data.get("link", "")), quote=True)
+    excerpt = escape(str(data.get("excerpt", "") or ""), quote=False)
+
+    parts = [
+        _label_block("bookmark", cfg),
+        '<!-- wp:heading {"level":3} -->\n'
+        f'<h3 class="wp-block-heading"><a href="{link}">{title}</a></h3>\n'
+        "<!-- /wp:heading -->\n\n",
+    ]
+    if excerpt:
+        parts.append(
+            "<!-- wp:paragraph -->\n"
+            f"<p>{excerpt}</p>\n"
+            "<!-- /wp:paragraph -->\n\n"
+        )
+    return "".join(parts)
+
+
 def callout_plugin(config=None, bookmark_resolver=None, warn=None):
     """Build a mistune plugin rendering callouts with this configuration."""
     cfg = merge_config(config, warn=warn)
@@ -366,6 +387,18 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         else:
             name = matched.group(1).lower()
             body = text[matched.end():]
+
+            if name == "bookmark":
+                token = {
+                    "type": "callout",
+                    "children": [],
+                    "attrs": {"name": name, "target": body.strip()},
+                }
+                if end_pos:
+                    state.prepend_token(token)
+                    return end_pos
+                state.append_token(token)
+                return state.cursor
 
             if name == "faq":
                 preamble, pairs = _split_faq(body, warn=_warn)
@@ -411,8 +444,70 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         state.append_token(token)
         return state.cursor
 
-    def render_callout(renderer, text, name):
+    def render_callout(renderer, text, name, target=None):
+        if name == "bookmark":
+            return _render_bookmark(target)
         return _group_open(name, cfg) + _label_block(name, cfg) + text + _GROUP_CLOSE
+
+    def _render_bookmark(target):
+        data = None
+        if bookmark_resolver is not None:
+            try:
+                data = bookmark_resolver(target)
+            except Exception as exc:  # never fail a publish over a bookmark
+                _warn(f"bookmark lookup failed for {target}: {exc}")
+            else:
+                if data is None:
+                    _warn(f"could not resolve bookmark target: {target}")
+
+        if data is None:
+            return _bookmark_link_card(target)
+        if data.get("image_url"):
+            return _bookmark_media_text(data)
+        return _bookmark_group_card(data)
+
+    def _bookmark_media_text(data):
+        image_url = escape(str(data["image_url"]), quote=True)
+        image_id = data.get("image_id")
+        title = escape(str(data.get("title", "")), quote=True)
+        attrs = {
+            "mediaType": "image",
+            "mediaWidth": 30,
+            "className": "is-callout is-callout-bookmark",
+        }
+        if image_id:
+            attrs["mediaId"] = image_id
+        img_class = f' class="wp-image-{image_id}"' if image_id else ""
+        return (
+            f"<!-- wp:media-text {json.dumps(attrs, separators=(',', ':'))} -->\n"
+            '<div class="wp-block-media-text is-stacked-on-mobile is-callout '
+            'is-callout-bookmark">\n'
+            '<figure class="wp-block-media-text__media">'
+            f'<img src="{image_url}" alt="{title}"{img_class}/></figure>\n'
+            '<div class="wp-block-media-text__content">\n'
+            f"{_bookmark_body(data, cfg)}"
+            "</div></div>\n"
+            "<!-- /wp:media-text -->\n\n"
+        )
+
+    def _bookmark_group_card(data):
+        return (
+            _group_open("bookmark", cfg)
+            + _bookmark_body(data, cfg)
+            + _GROUP_CLOSE
+        )
+
+    def _bookmark_link_card(target):
+        safe = escape(str(target), quote=True)
+        label = cfg["types"]["bookmark"]["label"]
+        return (
+            _group_open("bookmark", cfg)
+            + _label_block("bookmark", cfg)
+            + "<!-- wp:paragraph -->\n"
+            f'<p><a href="{safe}">{escape(label, quote=False)}</a></p>\n'
+            "<!-- /wp:paragraph -->\n\n"
+            + _GROUP_CLOSE
+        )
 
     def render_faq_item(renderer, text, question):
         return (
