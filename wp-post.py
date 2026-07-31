@@ -2202,9 +2202,15 @@ callouts:
   important #8250df, warning #9a6700, caution #d1242f). SUMMARY, FAQ, and
   BOOKMARK have no such convention and use the theme's
   primary-alt-accent.
-  Override per type in .wp-poster.json under "callouts", where a value
-  like "#cf2e2e" is used as a literal and anything else is treated as a
-  palette slug. See the wp-post skill for the full schema.
+  Override colour and icon per type in .wp-poster.json under "callouts",
+  where a value like "#cf2e2e" is used as a literal and anything else is
+  treated as a palette slug. See the wp-post skill for the full schema.
+
+  Labels are not configurable. They come from a built-in table in eleven
+  languages, selected by the destination site's locale in network.sites -
+  a post under a de_DE site gets "Warnung", not "Warning". A language with
+  no entry falls back to English and warns. --test resolves the locale the
+  same way, so a preview matches a publish.
 
   Icons are inline SVG and need the unfiltered_html capability to survive
   WordPress's content filter; wp-post warns after publishing if they were
