@@ -247,7 +247,7 @@ git commit -m "Add callout label translations for eleven languages"
 
 **Files:**
 - Modify: `callouts.py:118-139` (`DEFAULT_CONFIG`), `callouts.py:154-205` (`merge_config`)
-- Test: `tests/test_callouts.py:37-66` (migrate), `tests/test_callouts.py:96-100` (adjust)
+- Test: `tests/test_callouts.py:37-66` (migrate), `tests/test_callouts.py:96-100` (adjust), `tests/test_wp_post.py:2893-2900` (migrate)
 
 **Interfaces:**
 - Consumes: `_LABELS`, `resolve_lang(locale, warn)` from Task 1.
@@ -337,6 +337,32 @@ Replace `tests/test_callouts.py:50-66` with:
 
 `tests/test_callouts.py:96-100` (`test_null_type_override_warns_and_is_skipped`) asserts `merged["types"]["note"]["label"] == "Note"` and still passes unchanged, because English is the default. Leave it.
 
+`tests/test_wp_post.py` has a second label-override test that breaks here, not in Task 3 - it goes through `WordPressPost`, not `GutenbergConverter`. Replace `tests/test_wp_post.py:2893-2900`:
+
+```python
+    def test_callout_config_reaches_the_converter(self, md_file):
+        poster = wp_post.WordPressPost(
+            "https://example.com", "u", "p",
+            callout_config={"types": {"note": {"label": "Hinweis"}}},
+        )
+        path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
+        _, content = poster.parse_markdown_file(path)
+        assert "Hinweis</strong>" in content
+```
+
+with the same assertion expressed through a key that is still configurable:
+
+```python
+    def test_callout_config_reaches_the_converter(self, md_file):
+        poster = wp_post.WordPressPost(
+            "https://example.com", "u", "p",
+            callout_config={"types": {"note": {"color": "primary"}}},
+        )
+        path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
+        _, content = poster.parse_markdown_file(path)
+        assert "var:preset|color|primary" in content
+```
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_callouts.py -v`
@@ -405,16 +431,16 @@ and replace it with a rejection, so a stale config is reported rather than silen
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python3 -m pytest tests/test_callouts.py -v`
+Run: `python3 -m pytest tests/test_callouts.py tests/test_wp_post.py -v`
 Expected: PASS.
 
 Run: `python3 -m pytest -q`
-Expected: all passing. `tests/test_callouts.py:233` (`test_label_override_is_used`) will still fail here - it goes through `GutenbergConverter`, which Task 3 rewires. If it is the only failure, that is expected; fix it in Task 3, not here.
+Expected: exactly one failure - `tests/test_callouts.py:233` `test_label_override_is_used`, which drives `GutenbergConverter` and is rewired in Task 3. Any other failure means a label-override test was missed; find it with `grep -rn '"label"' tests/` and migrate it here rather than carrying it forward.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add callouts.py tests/test_callouts.py
+git add callouts.py tests/test_callouts.py tests/test_wp_post.py
 git commit -m "Seed callout labels from the translation table, drop the label key"
 ```
 
@@ -452,10 +478,14 @@ Replace `tests/test_callouts.py:233-237` (`test_label_override_is_used`) with:
         assert "Hinweis</strong>" in result
         assert "Note</strong>" not in result
 
-    def test_locale_reaches_the_faq_accordion_label(self):
+    def test_locale_reaches_the_faq_label(self):
+        # The assertion must be the generated label, not the authored
+        # question - "Frage?" is body text and would pass with an English
+        # label sitting right above it.
         md = "> [!FAQ]\n> **Frage?**\n> Antwort."
         result = convert(md, locale="de_DE")
-        assert "Frage?" in result
+        assert "Häufige Fragen</strong>" in result
+        assert "Frequently asked questions" not in result
 
     def test_locale_reaches_the_unresolved_bookmark_anchor(self):
         result = convert("> [!BOOKMARK]\n> /ein-artikel/", locale="de_DE")
@@ -597,6 +627,39 @@ class TestResolveLocaleForFile:
         assert resolve_locale_for_file(str(article)) is None
 
 
+class TestResolveLocaleIsBestEffort:
+    """Locale discovery runs unconditionally and under --test, so it must
+    degrade to English rather than abort a publish that used to work."""
+
+    def test_malformed_json_warns_and_returns_none(self, tmp_path, capsys):
+        (tmp_path / "content").mkdir()
+        (tmp_path / ".wp-poster.json").write_text('{"network": {')
+        article = tmp_path / "content" / "post.md"
+        article.write_text("# Title\n")
+        assert resolve_locale_for_file(str(article)) is None
+        assert "site language" in capsys.readouterr().err
+
+    def test_site_entry_missing_content_path_warns_and_returns_none(self, tmp_path, capsys):
+        (tmp_path / "content").mkdir()
+        (tmp_path / ".wp-poster.json").write_text(json.dumps({
+            "network": {"sites": {"de": {"locale": "de_DE", "blog_id": 3}}}
+        }))
+        article = tmp_path / "content" / "post.md"
+        article.write_text("# Title\n")
+        assert resolve_locale_for_file(str(article)) is None
+        assert "site language" in capsys.readouterr().err
+
+    def test_non_dict_site_entry_warns_and_returns_none(self, tmp_path, capsys):
+        (tmp_path / "content").mkdir()
+        (tmp_path / ".wp-poster.json").write_text(json.dumps({
+            "network": {"sites": {"de": "content/de"}}
+        }))
+        article = tmp_path / "content" / "post.md"
+        article.write_text("# Title\n")
+        assert resolve_locale_for_file(str(article)) is None
+        assert "site language" in capsys.readouterr().err
+
+
 class TestPosterCarriesLocale:
     def test_locale_defaults_to_none(self):
         poster = WordPressPost("https://e.com", "u", "p")
@@ -637,14 +700,31 @@ def resolve_locale_for_file(filepath):
 
     Reads on-disk config only - no network calls - so `--test` and a real
     publish resolve callout labels through exactly the same path.
+
+    Best-effort by construction. The helpers it calls are not:
+    find_network_config json.load()s without a guard, and
+    find_site_for_file indexes site_info['content_path'] directly, so
+    malformed JSON or a site entry missing content_path raises. Those
+    already run on the publish path, but only when --site-url is absent;
+    this function runs unconditionally and under --test, so an exception
+    here would newly break paths that used to work. A label falling back
+    to English must never cost a publish.
     """
-    net_root, net_config = find_network_config(filepath)
-    if not net_config:
+    try:
+        net_root, net_config = find_network_config(filepath)
+        if not net_config:
+            return None
+        site_key, site_info = find_site_for_file(net_root, net_config, filepath)
+        if not site_info:
+            return None
+        return resolve_site_identity(net_root, site_key, site_info).get('locale')
+    except Exception as e:
+        print(
+            f"⚠ Could not determine the site language for {filepath} ({e}); "
+            "using English callout labels",
+            file=sys.stderr,
+        )
         return None
-    site_key, site_info = find_site_for_file(net_root, net_config, filepath)
-    if not site_info:
-        return None
-    return resolve_site_identity(net_root, site_key, site_info).get('locale')
 ```
 
 Change `WordPressPost.__init__` (line 103):
@@ -721,29 +801,15 @@ git commit -m "Resolve the destination site's locale on the publish path"
 - Consumes: `resolve_locale_for_file(filepath)` from Task 4.
 - Produces: nothing new.
 
-This task changes three lines inside `main()`. Nothing in the suite drives `main()` - there are no `sys.argv` or CLI-subprocess tests in `tests/test_wp_post.py` - so the fail-first cycle here is a real command against a real network project, not a unit test. Run it before changing anything.
+This task changes three lines inside `main()`, so the test has to drive `main()`. That is reachable: `main()` is at `wp-post.py:2226`, `--test` needs no credentials, and the branch ends in `sys.exit(0)` after printing the blocks to stdout. Patching `sys.argv` and catching `SystemExit` gives a genuine red-green cycle against a temporary project - no live content repo involved.
 
-- [ ] **Step 1: Reproduce the wrong output**
+- [ ] **Step 1: Write the failing test**
 
-`payperfax-content` is a live network project whose `de` site declares `locale: de_DE`. Place a scratch German file under its German content path and preview it:
-
-```bash
-cd /home/adam/projects/payperfax-content
-printf -- '---\ntitle: Test\n---\n\n> [!WARNING]\n> Vorsicht.\n' > content/de/_locale-check.md
-python3 /home/adam/projects/wp-poster/wp-post.py content/de/_locale-check.md --test --markdown | grep -o 'W[a-z]*</strong>'
-```
-
-Expected right now: `Warning</strong>` - English chrome previewed for a German post. Leave the scratch file in place for Step 4.
-
-- [ ] **Step 2: Add the regression guard**
-
-A unit test cannot reach `main()`, but it can pin the contract that both modes resolve through the same helper, so a later edit cannot reintroduce a second divergent resolution. Add to `tests/test_wp_post.py`:
+Add to `tests/test_wp_post.py`:
 
 ```python
 class TestTestModeLocale:
-    def test_resolved_locale_drives_callout_labels(self, tmp_path):
-        # --test builds its poster with locale=resolve_locale_for_file(...),
-        # the same call the publish path makes. This pins the pairing.
+    def _german_project(self, tmp_path):
         (tmp_path / "content" / "de").mkdir(parents=True)
         (tmp_path / ".wp-poster.json").write_text(json.dumps({
             "network": {"sites": {
@@ -753,17 +819,37 @@ class TestTestModeLocale:
         }))
         article = tmp_path / "content" / "de" / "artikel.md"
         article.write_text("---\ntitle: Titel\n---\n\n> [!WARNING]\n> Vorsicht.\n")
+        return article
 
-        test_poster = WordPressPost('https://example.com', 'user', 'pass',
-                                    resolve_bookmarks=False,
-                                    locale=resolve_locale_for_file(str(article)))
-        _, blocks = test_poster.parse_markdown_file(str(article))
-        assert "Warnung</strong>" in blocks
-        assert "Warning</strong>" not in blocks
+    def test_test_mode_previews_the_sites_language(self, tmp_path, capsys):
+        # Drives main() end to end: this is the only test that proves the
+        # CLI wires the locale in. Constructing a WordPressPost by hand
+        # here would pass even with the wiring deleted.
+        article = self._german_project(tmp_path)
+        argv = ["wp-post", str(article), "--test", "--markdown"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "Warnung</strong>" in out
+        assert "Warning</strong>" not in out
+
+    def test_test_mode_outside_a_network_project_previews_english(self, tmp_path, capsys):
+        article = tmp_path / "post.md"
+        article.write_text("---\ntitle: Title\n---\n\n> [!WARNING]\n> Careful.\n")
+        argv = ["wp-post", str(article), "--test", "--markdown"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 0
+        assert "Warning</strong>" in capsys.readouterr().out
 ```
 
+- [ ] **Step 2: Run tests to verify they fail**
+
 Run: `python3 -m pytest tests/test_wp_post.py::TestTestModeLocale -v`
-Expected: PASS - it exercises the Task 4 helper, which already works. The gap this task closes is in `main()`, which Step 1 reproduced and Step 4 confirms.
+Expected: `test_test_mode_previews_the_sites_language` FAILS - stdout carries `Warning</strong>`, English chrome previewed for a German post. `test_test_mode_outside_a_network_project_previews_english` passes already; it guards the fallback against over-correction.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -790,17 +876,12 @@ with:
                                locale=resolve_locale_for_file(args.file))
 ```
 
-- [ ] **Step 4: Re-run the Step 1 command and clean up**
+- [ ] **Step 4: Run tests to verify they pass**
 
-```bash
-cd /home/adam/projects/payperfax-content
-python3 /home/adam/projects/wp-poster/wp-post.py content/de/_locale-check.md --test --markdown | grep -o 'W[a-z]*</strong>'
-rm content/de/_locale-check.md
-```
+Run: `python3 -m pytest tests/test_wp_post.py::TestTestModeLocale -v`
+Expected: PASS.
 
-Expected: `Warnung</strong>`, where Step 1 printed `Warning</strong>`. Delete the scratch file whether or not the check passed - it sits in a live content repo.
-
-Then run: `python3 -m pytest -q` from `/home/adam/projects/wp-poster`
+Run: `python3 -m pytest -q`
 Expected: all passing.
 
 - [ ] **Step 5: Commit**
@@ -956,10 +1037,12 @@ ls -d /home/adam/projects/*/.claude/skills/wp-post 2>/dev/null
 
 After Task 6, confirm the whole feature end to end:
 
-- [ ] `python3 -m pytest -q` from the repo root - all passing, no fewer than the 389 baseline plus the ~35 added here.
+- [ ] `python3 -m pytest -q` from the repo root - all passing, and more than the 389 baseline.
 - [ ] `git log --oneline master..` shows six commits, one per task.
-- [ ] A German file under `payperfax-content/content/de/` previews `Warnung` under `--test`; an English file under `content/en/` previews `Warning`.
+- [ ] `grep -rn '"label"' tests/` returns nothing - every label-override test was migrated, not left failing.
 - [ ] `grep -rn '"label"' skills/wp-post/SKILL.md` returns nothing.
+- [ ] `TestResolveLocaleIsBestEffort` passes - malformed JSON, a site entry with no `content_path`, and a non-dict site entry each warn and fall back to English rather than aborting.
+- [ ] `TestTestModeLocale::test_test_mode_previews_the_sites_language` fails if the `locale=` argument is deleted from the `--test` branch. Check this by hand once: remove it, watch the test go red, put it back.
 - [ ] A config carrying a stale `"label"` key warns rather than failing:
   `python3 -c "import callouts; callouts.merge_config({'types': {'note': {'label': 'x'}}})"`
   prints a warning to stderr and exits 0.
