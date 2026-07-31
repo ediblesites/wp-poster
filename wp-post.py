@@ -28,7 +28,7 @@ _session = requests.Session()
 _session.headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 requests.get = _session.get
 requests.post = _session.post
-from datetime import date
+from datetime import date, datetime
 import getpass
 
 from gutenberg import GutenbergConverter
@@ -54,6 +54,50 @@ def normalize_yaml_dates(value):
 def load_frontmatter(yaml_text):
     """Parse a frontmatter YAML block and normalize date values (issue #9)."""
     return normalize_yaml_dates(yaml.safe_load(yaml_text))
+
+
+_DATE_ONLY_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+_COMPACT_DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
+
+
+def normalize_post_date(value, warn=None):
+    """Coerce a frontmatter `date` to the date-time WordPress requires.
+
+    WordPress rejects a bare `2026-06-07` with "Invalid parameter(s): date"
+    - it wants a time component, though it accepts either a `T` or a space
+    as the separator. A bare date is the most natural thing to write and
+    the form YAML hands back, so fill in midnight rather than fail a
+    publish over something we can resolve. See issue #19.
+
+    Deliberately narrow: only unambiguous spellings are accepted. Slash
+    formats are left alone because `07/06/2026` is 7 June in one country
+    and 6 July in another, and guessing wrong silently backdates a post by
+    a month. Anything unrecognised passes through for WordPress to reject,
+    with a warning naming the forms that work.
+    """
+    warn = warn or (lambda m: print(f"⚠ {m}", file=sys.stderr))
+    text = str(value).strip()
+    if not text:
+        return value
+
+    m = _DATE_ONLY_RE.match(text) or _COMPACT_DATE_RE.match(text)
+    if m:
+        year, month, day = (int(p) for p in m.groups())
+        try:
+            return datetime(year, month, day).strftime("%Y-%m-%dT00:00:00")
+        except ValueError:
+            warn(f"date '{text}' is not a real calendar date; sending as-is")
+            return value
+
+    # Already carries a time, in either separator WordPress accepts.
+    if re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", text):
+        return text
+
+    warn(
+        f"date '{text}' is not a format WordPress accepts and will likely be "
+        "rejected. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."
+    )
+    return value
 
 
 class WordPressPost:
@@ -343,54 +387,96 @@ class WordPressPost:
         print(f"✗ Failed to upload inline image: {image_path_or_url}")
         return (None, None)
 
+    def _fetch_terms(self, url):
+        """Every term at `url`, indexed by name and slug.
+
+        Names arrive HTML-encoded ("Security &amp; Compliance") while
+        frontmatter carries the plain text, so the encoded form is unescaped
+        before indexing. Without that the lookup misses, the term is
+        recreated, WordPress rejects the duplicate slug, and the term is
+        silently dropped. See issue #17.
+
+        Paginated: a site with more than 100 terms would otherwise lose
+        everything past the first page to the same silent drop.
+        """
+        terms = {}
+        page = 1
+        while True:
+            response = requests.get(
+                url,
+                auth=self.auth,
+                params={'per_page': 100, 'page': page},
+                timeout=30,
+            )
+            if response.status_code != 200:
+                break
+            try:
+                batch = response.json()
+            except ValueError:
+                break
+            if not isinstance(batch, list) or not batch:
+                break
+            for term in batch:
+                if not isinstance(term, dict) or 'id' not in term:
+                    continue
+                if term.get('name'):
+                    terms[html.unescape(term['name'])] = term['id']
+                if term.get('slug'):
+                    terms[term['slug']] = term['id']
+            try:
+                total_pages = int(response.headers.get('X-WP-TotalPages', 1) or 1)
+            except ValueError:
+                total_pages = 1
+            if page >= total_pages:
+                break
+            page += 1
+        return terms
+
+    def _create_term(self, url, name, kind):
+        """Create a term and return its id, or None if it could not be made.
+
+        A name whose lookup missed is usually a term that already exists;
+        WordPress says so with `term_exists` and includes the id, so reuse
+        it rather than dropping the term. Any other failure warns instead
+        of vanishing - a silently missing category is the reason issue #17
+        went unnoticed.
+        """
+        response = requests.post(url, auth=self.auth, json={'name': name}, timeout=30)
+        if response.status_code == 201:
+            return response.json()['id']
+
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+
+        if body.get('code') == 'term_exists':
+            data = body.get('data')
+            term_id = data.get('term_id') if isinstance(data, dict) else None
+            if term_id:
+                return int(term_id)
+
+        detail = body.get('message') or f"HTTP {response.status_code}"
+        print(f"⚠ Could not assign {kind} '{name}': {detail}", file=sys.stderr)
+        return None
+
     def get_categories(self):
         """Get all categories from WordPress, indexed by both name and slug"""
-        response = requests.get(
-            f"{self.api_url}/categories",
-            auth=self.auth,
-            params={'per_page': 100},
-            timeout=30
-        )
-        if response.status_code == 200:
-            cats = {}
-            for cat in response.json():
-                cats[cat['name']] = cat['id']
-                cats[cat['slug']] = cat['id']
-            return cats
-        return {}
+        return self._fetch_terms(f"{self.api_url}/categories")
 
     def get_tags(self):
         """Get all tags from WordPress, indexed by both name and slug"""
-        response = requests.get(
-            f"{self.api_url}/tags",
-            auth=self.auth,
-            params={'per_page': 100},
-            timeout=30
-        )
-        if response.status_code == 200:
-            tags = {}
-            for tag in response.json():
-                tags[tag['name']] = tag['id']
-                tags[tag['slug']] = tag['id']
-            return tags
-        return {}
-    
+        return self._fetch_terms(f"{self.api_url}/tags")
+
     def create_category(self, name):
         """Create a new category"""
-        data = {'name': name}
-        response = requests.post(f"{self.api_url}/categories", auth=self.auth, json=data, timeout=30)
-        if response.status_code == 201:
-            return response.json()['id']
-        return None
-    
+        return self._create_term(f"{self.api_url}/categories", name, 'category')
+
     def create_tag(self, name):
         """Create a new tag"""
-        data = {'name': name}
-        response = requests.post(f"{self.api_url}/tags", auth=self.auth, json=data, timeout=30)
-        if response.status_code == 201:
-            return response.json()['id']
-        return None
-    
+        return self._create_term(f"{self.api_url}/tags", name, 'tag')
+
+
     def get_taxonomy_rest_base(self, taxonomy):
         """Get the REST API base for a taxonomy (may differ from slug)"""
         if not hasattr(self, '_taxonomy_cache'):
@@ -412,28 +498,12 @@ class WordPressPost:
     def get_taxonomy_terms(self, taxonomy):
         """Get all terms for a taxonomy, indexed by both name and slug"""
         rest_base = self.get_taxonomy_rest_base(taxonomy)
-        response = requests.get(
-            f"{self.api_url}/{rest_base}",
-            auth=self.auth,
-            params={'per_page': 100},
-            timeout=30
-        )
-        if response.status_code == 200:
-            terms = {}
-            for term in response.json():
-                terms[term['name']] = term['id']
-                terms[term['slug']] = term['id']
-            return terms
-        return {}
+        return self._fetch_terms(f"{self.api_url}/{rest_base}")
 
     def create_taxonomy_term(self, taxonomy, name):
         """Create a new term in a taxonomy"""
         rest_base = self.get_taxonomy_rest_base(taxonomy)
-        data = {'name': name}
-        response = requests.post(f"{self.api_url}/{rest_base}", auth=self.auth, json=data, timeout=30)
-        if response.status_code == 201:
-            return response.json()['id']
-        return None
+        return self._create_term(f"{self.api_url}/{rest_base}", name, taxonomy)
 
     def get_user_id(self, username_or_id):
         """Get user ID from username or return ID if already numeric"""
@@ -611,7 +681,7 @@ class WordPressPost:
         
         # Handle date (already normalized to an ISO string by load_frontmatter)
         if 'date' in frontmatter:
-            post_data['date'] = frontmatter['date']
+            post_data['date'] = normalize_post_date(frontmatter['date'])
 
         # Handle template (for pages and hierarchical post types)
         if 'template' in frontmatter:

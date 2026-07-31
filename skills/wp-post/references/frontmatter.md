@@ -56,7 +56,7 @@ translation_set: about-us       # MSLS translation group key (multisite only)
 | `status`         | string        | no       | `draft` or `publish`; `--draft` flag overrides         |
 | `format`         | string        | no       | `raw` or `markdown`; CLI flags override                |
 | `excerpt`        | string        | no       | Non-empty excerpt is also pushed as `rank_math_description` unless `rankmath.description` is set (see below) |
-| `date`           | ISO 8601      | no       | Publish date                                           |
+| `date`           | ISO 8601      | no       | Publish date. `2026-06-07` becomes midnight; see below |
 | `author`         | string or int | no       | Username string or numeric user ID                     |
 | `post_type`      | string        | no       | `post`, `page`, or any custom post type slug           |
 | `template`       | string        | no       | Only for pages/hierarchical types                      |
@@ -96,3 +96,22 @@ Images are deduplicated per-article against the media library (and same-site URL
 2. Frontmatter `format` field
 3. Config `default_format` setting
 4. Default: `raw`
+
+## Date formats
+
+WordPress requires a time component and rejects a bare date outright, so
+`date: 2026-06-07` is filled out to `2026-06-07T00:00:00` before sending.
+
+| Written              | Sent as               |
+|----------------------|-----------------------|
+| `2026-06-07`         | `2026-06-07T00:00:00` |
+| `2026-6-7`           | `2026-06-07T00:00:00` |
+| `20260607`           | `2026-06-07T00:00:00` |
+| `2026-06-07T09:30:00`| unchanged             |
+| `2026-06-07 09:30:00`| unchanged (WordPress accepts a space) |
+| `2026-06-07T09:30:00+02:00` | unchanged, converted to site time |
+
+Slash formats and month names are **not** accepted. `07/06/2026` is 7 June
+in one country and 6 July in another, and guessing wrong would silently
+move a post by a month, so they pass through for WordPress to reject with
+a warning naming the forms that work.

@@ -180,7 +180,11 @@ class TestUnquotedDatesAreSerializable:
 
         # The payload must be JSON-serializable (the original crash).
         json.dumps(post_data)
-        assert post_data["date"] == "2026-06-07"
+        # The post date gains a time component, which WordPress requires and
+        # rejects the bare date without (issue #19). Arbitrary meta dates are
+        # left exactly as written - they are the author's data, not a
+        # WordPress-validated field.
+        assert post_data["date"] == "2026-06-07T00:00:00"
         assert post_data["meta"]["pricing_verified"] == "2026-06-07"
 
 
@@ -2919,3 +2923,105 @@ class TestSvgStrippingDetection:
         assert wp._warn_if_svg_stripped(sent, {}) is False
         assert wp._warn_if_svg_stripped(sent, {"content": {"rendered": ""}}) is False
         assert capsys.readouterr().err == ""
+
+
+class TestNormalizePostDate:
+    """WordPress rejects a bare date; it needs a time component (issue #19)."""
+
+    def test_bare_date_gains_midnight(self):
+        assert wp_post.normalize_post_date("2026-06-07") == "2026-06-07T00:00:00"
+
+    def test_loose_iso_is_zero_padded(self):
+        assert wp_post.normalize_post_date("2026-6-7") == "2026-06-07T00:00:00"
+
+    def test_compact_date_is_expanded(self):
+        assert wp_post.normalize_post_date("20260607") == "2026-06-07T00:00:00"
+
+    def test_integer_compact_date(self):
+        # YAML parses an unquoted 20260607 as an int, not a string.
+        assert wp_post.normalize_post_date(20260607) == "2026-06-07T00:00:00"
+
+    def test_datetime_with_t_is_untouched(self):
+        assert wp_post.normalize_post_date("2026-06-07T09:30:00") == "2026-06-07T09:30:00"
+
+    def test_datetime_with_space_is_untouched(self):
+        # WordPress accepts a space separator, so don't rewrite it.
+        assert wp_post.normalize_post_date("2026-06-07 09:30:00") == "2026-06-07 09:30:00"
+
+    def test_timezone_offset_is_untouched(self):
+        value = "2026-06-07T09:30:00+02:00"
+        assert wp_post.normalize_post_date(value) == value
+
+    def test_ambiguous_slash_format_passes_through_with_a_warning(self):
+        warnings = []
+        # 07/06/2026 is 7 June or 6 July depending on the reader, so guessing
+        # would silently move the post by a month.
+        assert wp_post.normalize_post_date("07/06/2026", warn=warnings.append) == "07/06/2026"
+        assert len(warnings) == 1
+        assert "YYYY-MM-DD" in warnings[0]
+
+    def test_impossible_calendar_date_warns(self):
+        warnings = []
+        assert wp_post.normalize_post_date("2026-02-30", warn=warnings.append) == "2026-02-30"
+        assert len(warnings) == 1
+
+    def test_empty_value_is_left_alone(self):
+        assert wp_post.normalize_post_date("") == ""
+
+
+class TestTermLookupHandlesEntities:
+    """REST returns names HTML-encoded; frontmatter carries plain text (issue #17)."""
+
+    def _page(self, mock_response, items, total_pages=1):
+        resp = mock_response(200, items)
+        resp.headers = {"X-WP-TotalPages": str(total_pages)}
+        return resp
+
+    @patch('wp_post.requests.get')
+    def test_encoded_name_is_matched_by_its_plain_text(self, mock_get, wp, mock_response):
+        mock_get.return_value = self._page(mock_response, [
+            {"id": 88, "name": "Security &amp; Compliance", "slug": "security-compliance"},
+        ])
+        cats = wp.get_categories()
+        assert cats["Security & Compliance"] == 88
+        assert cats["security-compliance"] == 88
+
+    @patch('wp_post.requests.get')
+    def test_pagination_is_followed(self, mock_get, wp, mock_response):
+        mock_get.side_effect = [
+            self._page(mock_response, [{"id": 1, "name": "One", "slug": "one"}], total_pages=2),
+            self._page(mock_response, [{"id": 2, "name": "Two", "slug": "two"}], total_pages=2),
+        ]
+        cats = wp.get_categories()
+        assert cats["One"] == 1 and cats["Two"] == 2
+
+    @patch('wp_post.requests.get')
+    def test_malformed_batch_does_not_raise(self, mock_get, wp, mock_response):
+        mock_get.return_value = self._page(mock_response, {"code": "rest_no_route"})
+        assert wp.get_categories() == {}
+
+
+class TestTermCreationReusesExisting:
+    @patch('wp_post.requests.post')
+    def test_term_exists_returns_the_existing_id(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(400, {
+            "code": "term_exists",
+            "message": "A term with the name provided already exists with this parent.",
+            "data": {"status": 400, "term_id": 88},
+        })
+        assert wp.create_category("Security & Compliance") == 88
+
+    @patch('wp_post.requests.post')
+    def test_other_failures_warn_instead_of_vanishing(self, mock_post, wp, mock_response, capsys):
+        mock_post.return_value = mock_response(403, {
+            "code": "rest_cannot_create", "message": "Sorry, you are not allowed.",
+        })
+        assert wp.create_tag("Anything") is None
+        err = capsys.readouterr().err
+        assert "Could not assign tag 'Anything'" in err
+        assert "not allowed" in err
+
+    @patch('wp_post.requests.post')
+    def test_success_returns_the_new_id(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(201, {"id": 42})
+        assert wp.create_category("Brand New") == 42
