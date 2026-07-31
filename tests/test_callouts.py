@@ -502,3 +502,61 @@ class TestBookmarkMalformedResolver:
             "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: {}
         )
         assert "is-callout-bookmark" in result
+
+
+class TestBookmarkMalformedImageId:
+    """image_id's contract is int | None, but a resolver may return
+    anything. A non-int value must not reach json.dumps (a set or other
+    arbitrary object raises TypeError there) or get embedded verbatim
+    into the wp-image-{id} class (a JSON-safe but wrong-typed value, like
+    a string or list, would otherwise render as garbage). Every case
+    degrades to "no attachment association" - same as image_id being
+    absent - rather than raising or corrupting the markup. No warning is
+    expected: a wrong-typed image_id still produces a correct, usable
+    card.
+    """
+
+    def _render(self, image_id):
+        return convert(
+            "> [!BOOKMARK]\n> /x/",
+            bookmark_resolver=lambda target: dict(FULL_BOOKMARK, image_id=image_id),
+        )
+
+    def test_set_does_not_raise_and_omits_media_id(self):
+        result = self._render({1, 2, 3})
+        assert "wp:media-text" in result
+        assert "mediaId" not in result
+        assert "wp-image-" not in result
+
+    def test_arbitrary_object_does_not_raise_and_omits_media_id(self):
+        result = self._render(object())
+        assert "wp:media-text" in result
+        assert "mediaId" not in result
+        assert "wp-image-" not in result
+
+    def test_string_omits_media_id_and_class(self):
+        result = self._render("123")
+        assert "mediaId" not in result
+        assert "wp-image-" not in result
+
+    def test_float_omits_media_id_and_class(self):
+        result = self._render(123.0)
+        assert "mediaId" not in result
+        assert "wp-image-" not in result
+
+    def test_list_omits_media_id_and_class(self):
+        result = self._render([123])
+        assert "mediaId" not in result
+        assert "wp-image-" not in result
+
+    def test_bool_true_omits_media_id_and_class(self):
+        # isinstance(True, int) is True in Python, so bool needs its own
+        # exclusion or it would slip past a naive isinstance(x, int) check.
+        result = self._render(True)
+        assert "mediaId" not in result
+        assert "wp-image-" not in result
+
+    def test_genuine_int_still_produces_media_id_and_class(self):
+        result = self._render(123)
+        assert '"mediaId":123' in result
+        assert 'class="wp-image-123"' in result

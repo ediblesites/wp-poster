@@ -476,6 +476,12 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
     def _bookmark_media_text(data):
         image_url = escape(str(data["image_url"]), quote=True)
         image_id = data.get("image_id")
+        # The contract is int | None. bool is a subclass of int, so it's
+        # excluded explicitly; anything else non-int (a set, a string, a
+        # float, ...) is treated as absent rather than risking a
+        # json.dumps crash or a garbage "wp-image-{...}" class.
+        if isinstance(image_id, bool) or not isinstance(image_id, int):
+            image_id = None
         title = escape(str(data.get("title", "") or ""), quote=True)
         attrs = {
             "mediaType": "image",
