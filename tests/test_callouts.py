@@ -243,3 +243,75 @@ class TestSimpleCallouts:
         assert attrs["className"] == "is-callout is-callout-note"
         assert attrs["style"]["border"]["left"]["width"] == "4px"
         assert attrs["style"]["border"]["left"]["style"] == "solid"
+
+
+class TestFaqSplitting:
+    def test_splits_two_pairs(self):
+        body = "**First question?**\nFirst answer.\n\n**Second question?**\nSecond answer.\n"
+        preamble, pairs = callouts._split_faq(body)
+        assert preamble.strip() == ""
+        assert len(pairs) == 2
+        assert pairs[0][0] == "First question?"
+        assert "First answer." in pairs[0][1]
+        assert pairs[1][0] == "Second question?"
+
+    def test_no_questions_returns_body_as_preamble(self):
+        preamble, pairs = callouts._split_faq("Just prose.\n")
+        assert pairs == []
+        assert preamble.strip() == "Just prose."
+
+    def test_text_before_first_question_is_preamble(self):
+        body = "Intro line.\n\n**A question?**\nAn answer.\n"
+        preamble, pairs = callouts._split_faq(body)
+        assert "Intro line." in preamble
+        assert len(pairs) == 1
+
+
+class TestFaqRendering:
+    def test_emits_details_block_per_pair(self):
+        md = (
+            "> [!FAQ]\n"
+            "> **How long does setup take?**\n"
+            "> About ten minutes.\n"
+            ">\n"
+            "> **Is there a free tier?**\n"
+            "> Yes.\n"
+        )
+        result = convert(md)
+        assert result.count("<!-- wp:details -->") == 2
+        assert result.count("<!-- /wp:details -->") == 2
+
+    def test_question_is_an_inline_h3_with_no_margin(self):
+        md = "> [!FAQ]\n> **How long?**\n> Ten minutes.\n"
+        result = convert(md)
+        assert '<summary><h3 style="display:inline;margin:0">How long?</h3></summary>' in result
+
+    def test_answer_is_a_paragraph_block(self):
+        md = "> [!FAQ]\n> **How long?**\n> Ten minutes.\n"
+        result = convert(md)
+        assert "<!-- wp:paragraph -->\n<p>Ten minutes.</p>" in result
+
+    def test_wrapped_in_the_callout_group(self):
+        md = "> [!FAQ]\n> **How long?**\n> Ten minutes.\n"
+        result = convert(md)
+        assert "is-callout-faq" in result
+        assert "Frequently asked questions</strong>" in result
+
+    def test_answer_may_contain_a_list(self):
+        md = "> [!FAQ]\n> **What is included?**\n> - First\n> - Second\n"
+        result = convert(md)
+        assert "wp:list" in result
+        assert "First" in result
+        assert "Second" in result
+
+    def test_question_html_is_escaped(self):
+        md = "> [!FAQ]\n> **Is 5 < 6?**\n> Yes.\n"
+        result = convert(md)
+        assert "5 &lt; 6?" in result
+
+    def test_body_with_no_questions_warns_and_renders_as_content(self, capsys):
+        result = convert("> [!FAQ]\n> Just prose, no questions.\n")
+        assert "is-callout-faq" in result
+        assert "Just prose, no questions." in result
+        assert "wp:details" not in result
+        assert "no questions" in capsys.readouterr().err.lower()

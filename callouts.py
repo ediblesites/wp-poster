@@ -13,6 +13,7 @@ literal is used as-is; anything else is treated as a palette slug.
 import json
 import re
 import sys
+from html import escape
 
 CALLOUT_TYPES = (
     "note",
@@ -209,6 +210,26 @@ _CALLOUT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_FAQ_QUESTION_RE = re.compile(r"^\*\*(.+?)\*\*[ \t]*$", re.MULTILINE)
+
+
+def _split_faq(body):
+    """Split an FAQ body into (preamble, [(question, answer_markdown), ...]).
+
+    A question is a line consisting solely of bold text.
+    """
+    matches = list(_FAQ_QUESTION_RE.finditer(body))
+    if not matches:
+        return body, []
+
+    preamble = body[: matches[0].start()]
+    pairs = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        pairs.append((match.group(1).strip(), body[start:end]))
+    return preamble, pairs
+
 
 def _group_attrs(type_name, cfg):
     """Block attributes for a callout's wrapping core/group."""
@@ -315,11 +336,42 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         else:
             name = matched.group(1).lower()
             body = text[matched.end():]
-            child = state.child_state(body)
-            block.parse(child, rules)
+
+            if name == "faq":
+                preamble, pairs = _split_faq(body)
+                if not pairs:
+                    _warn(
+                        "[!FAQ] callout has no questions (no **question** "
+                        "lines found); rendering its body as ordinary content"
+                    )
+                    child = state.child_state(body)
+                    block.parse(child, rules)
+                    children = child.tokens
+                else:
+                    if preamble.strip():
+                        _warn(
+                            "[!FAQ] callout has text before the first question; "
+                            "it was dropped"
+                        )
+                    children = []
+                    for question, answer in pairs:
+                        item_state = state.child_state(answer)
+                        block.parse(item_state, rules)
+                        children.append(
+                            {
+                                "type": "faq_item",
+                                "children": item_state.tokens,
+                                "attrs": {"question": question},
+                            }
+                        )
+            else:
+                child = state.child_state(body)
+                block.parse(child, rules)
+                children = child.tokens
+
             token = {
                 "type": "callout",
-                "children": child.tokens,
+                "children": children,
                 "attrs": {"name": name},
             }
 
@@ -332,9 +384,20 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
     def render_callout(renderer, text, name):
         return _group_open(name, cfg) + _label_block(name, cfg) + text + _GROUP_CLOSE
 
+    def render_faq_item(renderer, text, question):
+        return (
+            "<!-- wp:details -->\n"
+            '<details class="wp-block-details">\n'
+            f'<summary><h3 style="display:inline;margin:0">{escape(question, quote=False)}</h3></summary>\n'
+            f"{text}"
+            "</details>\n"
+            "<!-- /wp:details -->\n\n"
+        )
+
     def plugin(md):
         md.block.register("block_quote", None, parse)
         if md.renderer and md.renderer.NAME == "html":
             md.renderer.register("callout", render_callout)
+            md.renderer.register("faq_item", render_faq_item)
 
     return plugin
