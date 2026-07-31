@@ -461,3 +461,44 @@ class TestBookmark:
         )
         assert "Five &lt; Six" in result
         assert "A &amp; B" in result
+
+
+class TestBookmarkMalformedResolver:
+    """A resolver is arbitrary user-supplied code; it may return anything.
+
+    _render_bookmark's try/except only covers the *call* to the resolver,
+    not what's done with a value it successfully returns. A truthy
+    non-dict return (or a dict with None where a string is expected) must
+    still degrade cleanly rather than crash the whole conversion - the
+    same "no callout failure may fail a publish" constraint that governs
+    the None/raises/absent paths.
+    """
+
+    def test_string_return_warns_and_emits_link_card(self, capsys):
+        result = convert(
+            "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: "not a dict"
+        )
+        assert "is-callout-bookmark" in result
+        assert '<a href="/x/">' in result
+        assert capsys.readouterr().err != ""
+
+    def test_list_return_warns_and_emits_link_card(self, capsys):
+        result = convert(
+            "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: ["oops"]
+        )
+        assert "is-callout-bookmark" in result
+        assert '<a href="/x/">' in result
+        assert capsys.readouterr().err != ""
+
+    def test_none_title_and_link_do_not_render_as_literal_none(self):
+        hostile = dict(FULL_BOOKMARK, title=None, link=None)
+        result = convert(
+            "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: hostile
+        )
+        assert "None" not in result
+
+    def test_empty_dict_return_renders_without_raising(self):
+        result = convert(
+            "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: {}
+        )
+        assert "is-callout-bookmark" in result

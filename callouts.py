@@ -343,8 +343,8 @@ def _label_block(type_name, cfg):
 
 def _bookmark_body(data, cfg):
     """Label, linked title, and excerpt - shared by both resolved cards."""
-    title = escape(str(data.get("title", "")), quote=False)
-    link = escape(str(data.get("link", "")), quote=True)
+    title = escape(str(data.get("title", "") or ""), quote=False)
+    link = escape(str(data.get("link", "") or ""), quote=True)
     excerpt = escape(str(data.get("excerpt", "") or ""), quote=False)
 
     parts = [
@@ -459,6 +459,13 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
             else:
                 if data is None:
                     _warn(f"could not resolve bookmark target: {target}")
+                elif not isinstance(data, dict):
+                    _warn(
+                        "bookmark resolver returned a "
+                        f"{type(data).__name__}, expected a dict, for "
+                        f"target: {target}"
+                    )
+                    data = None
 
         if data is None:
             return _bookmark_link_card(target)
@@ -469,7 +476,7 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
     def _bookmark_media_text(data):
         image_url = escape(str(data["image_url"]), quote=True)
         image_id = data.get("image_id")
-        title = escape(str(data.get("title", "")), quote=True)
+        title = escape(str(data.get("title", "") or ""), quote=True)
         attrs = {
             "mediaType": "image",
             "mediaWidth": 30,
