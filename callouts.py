@@ -108,8 +108,9 @@ _SVG_TEMPLATE = (
 # colour and only the icon would distinguish them.
 #
 # The three types with no cross-site convention - summary, faq, bookmark -
-# stay on the theme's `primary` instead, so a site's own brand still shows
-# up in the callouts that are not standard GFM.
+# stay on `primary-alt-accent`, so a site's own brand still shows up in
+# the callouts that are not standard GFM, in a tone that sets them apart
+# from the five hue-coded types without competing with them.
 #
 # Backgrounds stay on the theme slug for every type, so the boxes read as
 # part of the site rather than as imported GitHub chrome. Any of these can
@@ -123,9 +124,17 @@ DEFAULT_CONFIG = {
         "important": {"label": "Important", "color": "#8250df", "icon": None},
         "warning": {"label": "Warning", "color": "#9a6700", "icon": None},
         "caution": {"label": "Caution", "color": "#d1242f", "icon": None},
-        "summary": {"label": "In short", "color": "primary", "icon": None},
-        "faq": {"label": "Frequently asked questions", "color": "primary", "icon": None},
-        "bookmark": {"label": "Read next", "color": "primary", "icon": None},
+        "summary": {"label": "In short", "color": "primary-alt-accent", "icon": None},
+        "faq": {
+            "label": "Frequently asked questions",
+            "color": "primary-alt-accent",
+            "icon": None,
+        },
+        "bookmark": {
+            "label": "Read next",
+            "color": "primary-alt-accent",
+            "icon": None,
+        },
     },
 }
 
@@ -274,10 +283,32 @@ def _split_faq(body, warn=None):
     return preamble, pairs
 
 
+def _apply_background(background, attrs, classes, styles):
+    """Add a background to a block's attributes, classes, and inline style.
+
+    A palette slug rides on the block's own `backgroundColor` attribute
+    and the class WordPress generates from it; a hex literal has to go
+    through `style.color.background` instead. Shared by every callout
+    block so the two forms cannot drift apart between them.
+    """
+    if _HEX_RE.match(background):
+        attrs.setdefault("style", {}).setdefault("color", {})["background"] = background
+        classes.append("has-background")
+        styles.append(f"background-color:{color_css(background)}")
+    else:
+        attrs["backgroundColor"] = background
+        classes.append(f"has-{background}-background-color")
+        classes.append("has-background")
+
+
 def _group_attrs(type_name, cfg):
-    """Block attributes for a callout's wrapping core/group."""
+    """Block attributes for a callout's wrapping core/group.
+
+    Background is not applied here - `_group_open` adds it through
+    `_apply_background`, so the attribute, the class, and the inline
+    style are all decided in one place.
+    """
     accent = cfg["types"][type_name]["color"]
-    background = cfg["background"]
     padding = cfg["padding"]
 
     attrs = {"className": f"is-callout is-callout-{type_name}"}
@@ -297,10 +328,6 @@ def _group_attrs(type_name, cfg):
             }
         },
     }
-    if _HEX_RE.match(background):
-        style["color"] = {"background": background}
-    else:
-        attrs["backgroundColor"] = background
     attrs["style"] = style
     attrs["layout"] = {"type": "constrained"}
     return attrs
@@ -309,7 +336,6 @@ def _group_attrs(type_name, cfg):
 def _group_open(type_name, cfg):
     """Opening comment and <div> for a callout's wrapping core/group."""
     accent = cfg["types"][type_name]["color"]
-    background = cfg["background"]
     padding = cfg["padding"]
     attrs = _group_attrs(type_name, cfg)
 
@@ -319,12 +345,7 @@ def _group_open(type_name, cfg):
         "border-left-width:4px",
         "border-left-style:solid",
     ]
-    if _HEX_RE.match(background):
-        classes.append("has-background")
-        styles.append(f"background-color:{color_css(background)}")
-    else:
-        classes.append(f"has-{background}-background-color")
-        classes.append("has-background")
+    _apply_background(cfg["background"], attrs, classes, styles)
     for side in ("top", "right", "bottom", "left"):
         styles.append(f"padding-{side}:{padding}")
 
@@ -530,12 +551,22 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         # the attributes and rejects the block if it doesn't match. The
         # style is only added when mediaWidth differs from core's default
         # of 50, which ours always does, so it's unconditional here.
-        style = f' style="grid-template-columns:{media_width}% auto"'
+        styles = [f"grid-template-columns:{media_width}% auto"]
+        classes = [
+            "wp-block-media-text",
+            "is-stacked-on-mobile",
+            "is-callout",
+            "is-callout-bookmark",
+        ]
+        # Without this the image-bearing card is the only callout on a page
+        # with no background, since it builds its own markup instead of
+        # going through _group_open like every other type.
+        _apply_background(cfg["background"], attrs, classes, styles)
+        style = f' style="{";".join(styles)}"'
         img_class = f' class="wp-image-{image_id} size-full"' if image_id else ""
         return (
             f"<!-- wp:media-text {json.dumps(attrs, separators=(',', ':'))} -->\n"
-            '<div class="wp-block-media-text is-stacked-on-mobile is-callout '
-            f'is-callout-bookmark"{style}>\n'
+            f'<div class="{" ".join(classes)}"{style}>\n'
             '<figure class="wp-block-media-text__media">'
             f'<img src="{image_url}" alt="{title}"{img_class}/></figure>\n'
             '<div class="wp-block-media-text__content">\n'

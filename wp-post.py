@@ -2081,8 +2081,9 @@ callouts:
   Backgrounds come from the theme palette (tertiary), so callouts pick up
   the site's tint. Accents - border, icon, label - use GitHub's
   conventional hues for the five GFM types (note #0969da, tip #1a7f37,
-  important #8250df, warning #9a6700, caution #d1242f) and the theme's
-  primary for SUMMARY, FAQ, and BOOKMARK, which have no such convention.
+  important #8250df, warning #9a6700, caution #d1242f). SUMMARY, FAQ, and
+  BOOKMARK have no such convention and use the theme's
+  primary-alt-accent.
   Override per type in .wp-poster.json under "callouts", where a value
   like "#cf2e2e" is used as a literal and anything else is treated as a
   palette slug. See the wp-post skill for the full schema.

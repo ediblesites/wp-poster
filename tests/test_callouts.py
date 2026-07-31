@@ -165,8 +165,10 @@ class TestSimpleCallouts:
     def test_accent_slug_becomes_preset_reference_and_css_var(self):
         # summary has no cross-site convention, so it keeps the theme slug.
         result = convert("> [!SUMMARY]\n> - A point.")
-        assert '"color":"var:preset|color|primary"' in result
-        assert "border-left-color:var(--wp--preset--color--primary)" in result
+        assert '"color":"var:preset|color|primary-alt-accent"' in result
+        assert (
+            "border-left-color:var(--wp--preset--color--primary-alt-accent)" in result
+        )
 
     def test_gfm_types_default_to_the_conventional_hues(self):
         # A palette slug cannot carry hue meaning, so the five GFM types
@@ -185,9 +187,17 @@ class TestSimpleCallouts:
             assert "var:preset|color|" not in result, name
 
     def test_non_gfm_types_keep_the_theme_accent(self):
-        for md in ("> [!SUMMARY]\n> - A point.", "> [!FAQ]\n> **Q?**\n> A."):
+        # The three types with no cross-site convention share one theme slug.
+        for md in (
+            "> [!SUMMARY]\n> - A point.",
+            "> [!FAQ]\n> **Q?**\n> A.",
+            "> [!BOOKMARK]\n> /x/",
+        ):
             result = convert(md)
-            assert "border-left-color:var(--wp--preset--color--primary)" in result, md
+            assert (
+                "border-left-color:var(--wp--preset--color--primary-alt-accent)"
+                in result
+            ), md
 
     def test_background_stays_on_the_theme_for_hue_typed_callouts(self):
         # Only the accent carries the hue; the box still picks up the
@@ -431,6 +441,26 @@ class TestBookmark:
         )
         assert "wp:media-text" in result
         assert 'class="wp-image-123 size-full"' in result
+
+    def test_media_text_card_has_the_same_background_as_every_other_callout(self):
+        # It builds its own markup rather than going through _group_open,
+        # so it silently shipped with no background at all until this was
+        # caught on a published page.
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        assert '"backgroundColor":"tertiary"' in result
+        assert "has-tertiary-background-color has-background" in result
+
+    def test_media_text_background_honours_a_hex_config(self):
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+            callout_config={"background": "#eeeeee"},
+        )
+        assert "background-color:#eeeeee" in result
+        assert '"backgroundColor"' not in result
         assert "https://example.com/thumb.jpg" in result
 
     def test_media_text_wrapper_style_matches_the_mediawidth_attribute(self):

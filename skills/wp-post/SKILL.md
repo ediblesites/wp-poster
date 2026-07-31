@@ -146,17 +146,18 @@ Backgrounds always come from the theme palette (`tertiary` by default), so
 callouts pick up the site's own tint. The accent - the left border, the
 icon, and the label - depends on the type:
 
-| Types                                        | Accent                        |
-|----------------------------------------------|-------------------------------|
-| `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` | GitHub's conventional hues |
-| `SUMMARY`, `FAQ`, `BOOKMARK`                 | theme palette `primary`       |
+| Types                                            | Accent                       |
+|--------------------------------------------------|------------------------------|
+| `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` | GitHub's conventional hues   |
+| `SUMMARY`, `FAQ`, `BOOKMARK`                     | theme `primary-alt-accent`   |
 
 The five GFM admonitions carry hues because readers already associate them
 with meanings - amber warns, red stops. A theme palette cannot express
 that, since its slots are named by role (`primary`, `secondary`) rather
 than by hue, so every type would look identical and only the icon would
-tell them apart. The three types with no cross-site convention stay on the
-theme's brand colour.
+tell them apart. The three types with no cross-site convention stay on a
+theme slug so a site's own brand still shows through, in a tone that
+separates them from the hue-coded five without competing with them.
 
 Defaults: note `#0969da`, tip `#1a7f37`, important `#8250df`, warning
 `#9a6700`, caution `#d1242f`.
