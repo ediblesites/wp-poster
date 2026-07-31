@@ -541,6 +541,10 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         attrs = {
             "mediaType": "image",
             "mediaWidth": media_width,
+            # "Crop image to fit" in the editor. Without it a portrait
+            # thumbnail leaves dead space beside the text; with it the
+            # image fills its column at any aspect ratio.
+            "imageFill": True,
             "className": "is-callout is-callout-bookmark",
         }
         if image_id:
@@ -555,6 +559,10 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         classes = [
             "wp-block-media-text",
             "is-stacked-on-mobile",
+            # Paired with the imageFill attribute above; core's save()
+            # emits it in this position, and block validation compares
+            # the whole class string.
+            "is-image-fill-element",
             "is-callout",
             "is-callout-bookmark",
         ]
@@ -564,11 +572,14 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
         _apply_background(cfg["background"], attrs, classes, styles)
         style = f' style="{";".join(styles)}"'
         img_class = f' class="wp-image-{image_id} size-full"' if image_id else ""
+        # imageFill makes save() emit object-position from focalPoint,
+        # which defaults to dead centre when the attribute is absent.
+        img_style = ' style="object-position:50% 50%"'
         return (
             f"<!-- wp:media-text {json.dumps(attrs, separators=(',', ':'))} -->\n"
             f'<div class="{" ".join(classes)}"{style}>\n'
             '<figure class="wp-block-media-text__media">'
-            f'<img src="{image_url}" alt="{title}"{img_class}/></figure>\n'
+            f'<img src="{image_url}" alt="{title}"{img_class}{img_style}/></figure>\n'
             '<div class="wp-block-media-text__content">\n'
             f"{_bookmark_body(data, cfg)}"
             "</div></div>\n"

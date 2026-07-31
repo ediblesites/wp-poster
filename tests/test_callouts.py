@@ -442,6 +442,18 @@ class TestBookmark:
         assert "wp:media-text" in result
         assert 'class="wp-image-123 size-full"' in result
 
+    def test_media_text_crops_the_image_to_fit(self):
+        # "Crop image to fit" in the editor. All three parts are required
+        # together - Gutenberg re-derives the markup from the attributes
+        # and rejects the block if class or style disagree with imageFill.
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        assert '"imageFill":true' in result
+        assert "is-stacked-on-mobile is-image-fill-element" in result
+        assert 'style="object-position:50% 50%"' in result
+
     def test_media_text_card_has_the_same_background_as_every_other_callout(self):
         # It builds its own markup rather than going through _group_open,
         # so it silently shipped with no background at all until this was
