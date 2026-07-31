@@ -259,14 +259,25 @@ class WordPressPost:
 
     @staticmethod
     def _bookmark_slug(target):
-        """Reduce a slug, /path/, or full URL to its final path segment."""
+        """Reduce a slug, /path/, or full URL to its final path segment.
+
+        Case-folded, because WordPress lowercases slugs when it creates
+        them: a target typed with the capitalisation of the post title
+        ("/My-Post/") would otherwise miss and quietly degrade to a plain
+        link card. A percent-encoded segment is left as written - WordPress
+        encodes non-Latin slugs with uppercase hex (%E3%81%82), so folding
+        one would turn a working lookup into a miss. See issue #21.
+        """
         text = (target or '').strip()
         if not text:
             return None
         if '://' in text:
             text = urlparse(text).path
         segments = [s for s in text.split('/') if s]
-        return segments[-1] if segments else None
+        if not segments:
+            return None
+        slug = segments[-1]
+        return slug if '%' in slug else slug.lower()
 
     @staticmethod
     def _bookmark_rendered_field(item, key, warn=None):

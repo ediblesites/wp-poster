@@ -3025,3 +3025,37 @@ class TestTermCreationReusesExisting:
     def test_success_returns_the_new_id(self, mock_post, wp, mock_response):
         mock_post.return_value = mock_response(201, {"id": 42})
         assert wp.create_category("Brand New") == 42
+
+
+class TestBookmarkSlugCaseFolding:
+    """WordPress lowercases slugs on creation, so targets must fold (#21)."""
+
+    def test_title_capitalisation_is_folded(self, wp):
+        assert wp._bookmark_slug("/My-Post/") == "my-post"
+
+    def test_full_url_is_folded(self, wp):
+        assert wp._bookmark_slug("https://example.com/My-Post/") == "my-post"
+
+    def test_already_lowercase_is_unchanged(self, wp):
+        assert wp._bookmark_slug("/my-post/") == "my-post"
+
+    def test_percent_encoded_slug_is_left_alone(self, wp):
+        # WordPress encodes non-Latin slugs with uppercase hex; folding
+        # would turn a working lookup into a miss.
+        assert wp._bookmark_slug("/%E3%81%82/") == "%E3%81%82"
+
+    def test_empty_and_slash_only_targets(self, wp):
+        assert wp._bookmark_slug("") is None
+        assert wp._bookmark_slug("///") is None
+
+    @patch('wp_post.requests.get')
+    def test_uppercase_target_queries_the_folded_slug(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [{
+            "title": {"rendered": "My Post"},
+            "link": "https://example.com/my-post/",
+            "excerpt": {"rendered": "<p>Excerpt.</p>"},
+        }])
+        data = wp._resolve_bookmark("/My-Post/")
+        assert data["title"] == "My Post"
+        assert mock_get.call_args.kwargs["params"]["slug"] == "my-post"
+        assert mock_get.call_count == 1
