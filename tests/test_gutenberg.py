@@ -264,25 +264,30 @@ class TestCalloutsIntegration:
         assert "<code>code</code>" in result
         assert "<strong>" in result
 
-    def test_callout_border_uses_the_theme_palette(self, converter):
+    def test_callout_border_uses_the_conventional_hue(self, converter):
         md = "> [!WARNING]\n> Watch out."
         result = converter.convert(md)
-        assert "border-left-color:var(--wp--preset--color--primary)" in result
+        assert "border-left-color:#9a6700" in result
         assert "border-left-style:solid" in result
-        assert "#9a6700" not in result
 
     def test_callout_icon_inherits_its_label_colour(self, converter):
+        # The icon has no colour of its own - currentColor makes it follow
+        # the label, so one config value drives both.
         md = "> [!NOTE]\n> Info here."
         result = converter.convert(md)
         assert "<svg" in result
         assert 'fill="currentColor"' in result
-        assert "#0969da" not in result
+        assert 'fill="#0969da"' not in result
 
-    def test_callout_label_uses_the_theme_palette(self, converter):
+    def test_callout_label_uses_the_conventional_hue(self, converter):
         md = "> [!CAUTION]\n> Danger."
         result = converter.convert(md)
-        assert "color:var(--wp--preset--color--primary)" in result
-        assert "#d1242f" not in result
+        assert "color:#d1242f" in result
+
+    def test_callout_background_still_comes_from_the_theme(self, converter):
+        # Hues apply to the accent only; the background stays theme-driven.
+        result = converter.convert("> [!CAUTION]\n> Danger.")
+        assert "has-tertiary-background-color" in result
 
 
 class TestTables:

@@ -101,7 +101,7 @@ class TestMalformedConfig:
 
     def test_non_string_color_falls_back_to_default(self):
         merged = callouts.merge_config({"types": {"note": {"color": 42}}})
-        assert merged["types"]["note"]["color"] == "primary"
+        assert merged["types"]["note"]["color"] == "#0969da"
 
     def test_non_string_icon_falls_back_to_builtin(self):
         merged = callouts.merge_config({"types": {"note": {"icon": 42}}})
@@ -163,9 +163,38 @@ class TestSimpleCallouts:
         assert "has-tertiary-background-color has-background" in result
 
     def test_accent_slug_becomes_preset_reference_and_css_var(self):
-        result = convert("> [!NOTE]\n> A note.")
+        # summary has no cross-site convention, so it keeps the theme slug.
+        result = convert("> [!SUMMARY]\n> - A point.")
         assert '"color":"var:preset|color|primary"' in result
         assert "border-left-color:var(--wp--preset--color--primary)" in result
+
+    def test_gfm_types_default_to_the_conventional_hues(self):
+        # A palette slug cannot carry hue meaning, so the five GFM types
+        # ship GitHub's colours instead. Readers already know amber warns
+        # and red stops; a theme's `primary` says nothing about severity.
+        for name, hue in (
+            ("note", "#0969da"),
+            ("tip", "#1a7f37"),
+            ("important", "#8250df"),
+            ("warning", "#9a6700"),
+            ("caution", "#d1242f"),
+        ):
+            result = convert(f"> [!{name.upper()}]\n> Body.")
+            assert f"border-left-color:{hue}" in result, name
+            assert f'"color":"{hue}"' in result, name
+            assert "var:preset|color|" not in result, name
+
+    def test_non_gfm_types_keep_the_theme_accent(self):
+        for md in ("> [!SUMMARY]\n> - A point.", "> [!FAQ]\n> **Q?**\n> A."):
+            result = convert(md)
+            assert "border-left-color:var(--wp--preset--color--primary)" in result, md
+
+    def test_background_stays_on_the_theme_for_hue_typed_callouts(self):
+        # Only the accent carries the hue; the box still picks up the
+        # site's tint so callouts do not read as imported GitHub chrome.
+        result = convert("> [!CAUTION]\n> Danger.")
+        assert '"backgroundColor":"tertiary"' in result
+        assert "has-tertiary-background-color has-background" in result
 
     def test_border_declares_a_style_so_it_is_visible(self):
         # border-style defaults to none, which zeroes border-width, so a

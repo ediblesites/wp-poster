@@ -142,24 +142,41 @@ silently merges into one answer.
 target up through the REST API to build the card. Under `--test`, or when
 the target cannot be found, it degrades to a plain link card.
 
-Colours default to the theme palette slugs `tertiary` (background) and
-`primary` (accent) for every type, which suit the Ollie theme. Override
-per project in `.wp-poster.json`:
+Backgrounds always come from the theme palette (`tertiary` by default), so
+callouts pick up the site's own tint. The accent - the left border, the
+icon, and the label - depends on the type:
+
+| Types                                        | Accent                        |
+|----------------------------------------------|-------------------------------|
+| `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` | GitHub's conventional hues |
+| `SUMMARY`, `FAQ`, `BOOKMARK`                 | theme palette `primary`       |
+
+The five GFM admonitions carry hues because readers already associate them
+with meanings - amber warns, red stops. A theme palette cannot express
+that, since its slots are named by role (`primary`, `secondary`) rather
+than by hue, so every type would look identical and only the icon would
+tell them apart. The three types with no cross-site convention stay on the
+theme's brand colour.
+
+Defaults: note `#0969da`, tip `#1a7f37`, important `#8250df`, warning
+`#9a6700`, caution `#d1242f`.
+
+Override per project in `.wp-poster.json`:
 
 ```json
 "callouts": {
   "background": "tertiary",
   "padding": "1.25rem",
   "types": {
-    "note":    {"label": "Note",    "color": "primary"},
-    "caution": {"label": "Caution", "color": "#cf2e2e"}
+    "note":    {"label": "Note",    "color": "#0969da"},
+    "caution": {"label": "Caution", "color": "primary"}
   }
 }
 ```
 
 - `label` - text shown after the icon. Use this to localise callouts.
-- `color` - a palette slug, or a hex literal like `#cf2e2e` for themes
-  whose palette has no suitable colour.
+- `color` - a hex literal like `#cf2e2e`, or a palette slug like `primary`
+  to tie a type to the site's brand instead of the convention.
 - `icon` - inline HTML replacing the built-in SVG. Set `""` to remove it.
 
 Icons are inline `<svg>`, which WordPress strips from post content unless

@@ -2078,10 +2078,14 @@ callouts:
   the first line of the body or preceded by a blank line; otherwise it
   stays part of the previous answer instead of starting a new question.
 
-  Colours come from the theme palette by default (tertiary background,
-  primary accent). Override per type in .wp-poster.json under "callouts",
-  where a value like "#cf2e2e" is used as a literal and anything else is
-  treated as a palette slug. See the wp-post skill for the full schema.
+  Backgrounds come from the theme palette (tertiary), so callouts pick up
+  the site's tint. Accents - border, icon, label - use GitHub's
+  conventional hues for the five GFM types (note #0969da, tip #1a7f37,
+  important #8250df, warning #9a6700, caution #d1242f) and the theme's
+  primary for SUMMARY, FAQ, and BOOKMARK, which have no such convention.
+  Override per type in .wp-poster.json under "callouts", where a value
+  like "#cf2e2e" is used as a literal and anything else is treated as a
+  palette slug. See the wp-post skill for the full schema.
 
   Icons are inline SVG and need the unfiltered_html capability to survive
   WordPress's content filter; wp-post warns after publishing if they were

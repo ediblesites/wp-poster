@@ -101,15 +101,28 @@ _SVG_TEMPLATE = (
     'margin-right:6px;position:relative;top:-2px;"><path d="{path}"></path></svg>'
 )
 
+# The five GFM admonitions carry GitHub's hues, because readers already
+# associate those colours with those meanings - amber warns, red stops.
+# A palette slug cannot express that: a theme's slots are named by role
+# (primary, secondary) rather than by hue, so every type would share one
+# colour and only the icon would distinguish them.
+#
+# The three types with no cross-site convention - summary, faq, bookmark -
+# stay on the theme's `primary` instead, so a site's own brand still shows
+# up in the callouts that are not standard GFM.
+#
+# Backgrounds stay on the theme slug for every type, so the boxes read as
+# part of the site rather than as imported GitHub chrome. Any of these can
+# be overridden per project; see the `callouts` key in .wp-poster.json.
 DEFAULT_CONFIG = {
     "background": "tertiary",
     "padding": "1.25rem",
     "types": {
-        "note": {"label": "Note", "color": "primary", "icon": None},
-        "tip": {"label": "Tip", "color": "primary", "icon": None},
-        "important": {"label": "Important", "color": "primary", "icon": None},
-        "warning": {"label": "Warning", "color": "primary", "icon": None},
-        "caution": {"label": "Caution", "color": "primary", "icon": None},
+        "note": {"label": "Note", "color": "#0969da", "icon": None},
+        "tip": {"label": "Tip", "color": "#1a7f37", "icon": None},
+        "important": {"label": "Important", "color": "#8250df", "icon": None},
+        "warning": {"label": "Warning", "color": "#9a6700", "icon": None},
+        "caution": {"label": "Caution", "color": "#d1242f", "icon": None},
         "summary": {"label": "In short", "color": "primary", "icon": None},
         "faq": {"label": "Frequently asked questions", "color": "primary", "icon": None},
         "bookmark": {"label": "Read next", "color": "primary", "icon": None},
