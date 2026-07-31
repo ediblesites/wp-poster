@@ -161,6 +161,17 @@ defaults target slugs Ollie actually has.
 
 The same rule applies to the group's `background` value.
 
+The border must also declare `"style":"solid"`. The CSS initial value of
+`border-style` is `none`, which computes `border-width` to zero, so a
+colour and width alone render no border at all. The current `wp:quote`
+admonitions get away without it only because Ollie styles `core/quote`
+with a solid left border; a `core/group` has no such theme default.
+
+Config values arrive from hand-edited JSON, so every field may be the
+wrong type. Merging must never raise: a non-string label, colour, or
+background falls back to the built-in default with a warning, matching
+the rule that no callout failure fails a publish.
+
 ## Block markup
 
 ### The six simple types
@@ -168,8 +179,8 @@ The same rule applies to the group's `background` value.
 One `core/group`, one label paragraph, then the body:
 
 ```html
-<!-- wp:group {"className":"is-callout is-callout-note","backgroundColor":"tertiary","style":{"border":{"left":{"color":"var:preset|color|primary","width":"4px"}},"spacing":{"padding":{"top":"var:preset|spacing|small","right":"var:preset|spacing|small","bottom":"var:preset|spacing|small","left":"var:preset|spacing|small"}}},"layout":{"type":"constrained"}} -->
-<div class="wp-block-group is-callout is-callout-note has-tertiary-background-color has-background" style="border-left-color:var(--wp--preset--color--primary);border-left-width:4px;padding-top:var(--wp--preset--spacing--small);...">
+<!-- wp:group {"className":"is-callout is-callout-note","backgroundColor":"tertiary","style":{"border":{"left":{"color":"var:preset|color|primary","width":"4px","style":"solid"}},"spacing":{"padding":{"top":"1.25rem","right":"1.25rem","bottom":"1.25rem","left":"1.25rem"}}},"layout":{"type":"constrained"}} -->
+<div class="wp-block-group is-callout is-callout-note has-tertiary-background-color has-background" style="border-left-color:var(--wp--preset--color--primary);border-left-width:4px;border-left-style:solid;padding-top:1.25rem;...">
 <!-- wp:paragraph {"className":"is-callout-label","style":{"color":{"text":"var:preset|color|primary"}}} -->
 <p class="is-callout-label has-text-color" style="color:var(--wp--preset--color--primary)"><strong><svg ... fill="currentColor">...</svg> Note</strong></p>
 <!-- /wp:paragraph -->
@@ -361,8 +372,15 @@ demo post rather than by assumption:
 2. Whether `core/group` serialises split (per-side) border colour as
    assumed. Fallback: a full border in the accent colour, or a
    `core/quote` wrapper, which Ollie already gives a left border.
+3. Whether the inline `<svg>` inside the label paragraph is itself
+   editor-valid, independently of whether kses keeps it.
 
-Both are front-end-correct either way; the risk is confined to the editor.
+Fetching the published page settles storage and kses, but not editor
+validity - block validation is a client-side comparison the front end
+never performs. Answering these requires parsing the stored content with
+`@wordpress/blocks` and checking `isValid`, or opening the post in
+wp-admin. Neither question may be marked settled on the strength of
+front-end HTML alone.
 
 ## Demo
 
