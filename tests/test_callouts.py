@@ -266,6 +266,33 @@ class TestFaqSplitting:
         assert "Intro line." in preamble
         assert len(pairs) == 1
 
+    def test_bold_line_without_blank_line_above_stays_in_the_answer(self):
+        body = (
+            "**Real question?**\n"
+            "**Note:**\n"
+            "This is important context inside the answer.\n"
+        )
+        preamble, pairs = callouts._split_faq(body)
+        assert len(pairs) == 1
+        assert pairs[0][0] == "Real question?"
+        assert "**Note:**" in pairs[0][1]
+        assert "This is important context inside the answer." in pairs[0][1]
+
+    def test_question_at_start_of_body_is_detected(self):
+        body = "**Only question?**\nOnly answer.\n"
+        preamble, pairs = callouts._split_faq(body)
+        assert len(pairs) == 1
+        assert pairs[0][0] == "Only question?"
+
+    def test_empty_answer_is_skipped_and_warns(self):
+        body = "**Empty question?**\n\n**Real question?**\nAn answer.\n"
+        warnings = []
+        preamble, pairs = callouts._split_faq(body, warn=warnings.append)
+        assert len(pairs) == 1
+        assert pairs[0][0] == "Real question?"
+        assert len(warnings) == 1
+        assert "no answer" in warnings[0].lower()
+
 
 class TestFaqRendering:
     def test_emits_details_block_per_pair(self):
@@ -315,3 +342,42 @@ class TestFaqRendering:
         assert "Just prose, no questions." in result
         assert "wp:details" not in result
         assert "no questions" in capsys.readouterr().err.lower()
+
+    def test_bold_line_glued_to_answer_does_not_start_a_new_accordion(self):
+        md = (
+            "> [!FAQ]\n"
+            "> **Real question?**\n"
+            "> **Note:**\n"
+            "> This is important context inside the answer.\n"
+        )
+        result = convert(md)
+        assert result.count("<!-- wp:details -->") == 1
+        assert "<summary><h3 style=\"display:inline;margin:0\">Note:</h3></summary>" not in result
+        assert "This is important context inside the answer." in result
+
+    def test_two_question_faq_with_blank_line_between_still_works(self):
+        md = (
+            "> [!FAQ]\n"
+            "> **How long does setup take?**\n"
+            "> About ten minutes.\n"
+            ">\n"
+            "> **Is there a free tier?**\n"
+            "> Yes.\n"
+        )
+        result = convert(md)
+        assert result.count("<!-- wp:details -->") == 2
+        assert result.count("<!-- /wp:details -->") == 2
+
+    def test_question_with_empty_answer_is_skipped_and_warns(self, capsys):
+        md = (
+            "> [!FAQ]\n"
+            "> **Empty question?**\n"
+            ">\n"
+            "> **Real question?**\n"
+            "> An answer.\n"
+        )
+        result = convert(md)
+        assert result.count("<!-- wp:details -->") == 1
+        assert "Empty question?" not in result
+        assert "Real question?" in result
+        assert "no answer" in capsys.readouterr().err.lower()

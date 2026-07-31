@@ -213,21 +213,51 @@ _CALLOUT_RE = re.compile(
 _FAQ_QUESTION_RE = re.compile(r"^\*\*(.+?)\*\*[ \t]*$", re.MULTILINE)
 
 
-def _split_faq(body):
+def _split_faq(body, warn=None):
     """Split an FAQ body into (preamble, [(question, answer_markdown), ...]).
 
-    A question is a line consisting solely of bold text.
+    A question is a line consisting solely of bold text, and only opens a
+    new question when it is the first line of the body or is preceded by
+    a blank line - a bold line stuck directly to the end of an answer
+    (no blank line above it) stays part of that answer instead of starting
+    a new one. A standalone bold line that *is* preceded by a blank line
+    inside an answer is still read as a new question; that's accepted as
+    an unavoidable ambiguity, not something this function tries to guess
+    around.
+
+    A pair whose answer is empty or whitespace-only is dropped rather than
+    emitted as an empty accordion, but never silently: it is reported
+    through `warn` so nothing disappears without a trace.
     """
-    matches = list(_FAQ_QUESTION_RE.finditer(body))
-    if not matches:
+    warn = warn or _default_warn
+    questions = []
+    for match in _FAQ_QUESTION_RE.finditer(body):
+        start = match.start()
+        if start == 0:
+            questions.append(match)
+            continue
+        # MULTILINE '^' means start sits right after the '\n' that ends
+        # the previous line, so body[start - 1] is that newline. Look at
+        # the line before it to see whether it's blank.
+        prior_newline = body.rfind("\n", 0, start - 1)
+        previous_line = body[prior_newline + 1 : start - 1]
+        if previous_line.strip() == "":
+            questions.append(match)
+
+    if not questions:
         return body, []
 
-    preamble = body[: matches[0].start()]
+    preamble = body[: questions[0].start()]
     pairs = []
-    for index, match in enumerate(matches):
+    for index, match in enumerate(questions):
         start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        pairs.append((match.group(1).strip(), body[start:end]))
+        end = questions[index + 1].start() if index + 1 < len(questions) else len(body)
+        answer = body[start:end]
+        question = match.group(1).strip()
+        if not answer.strip():
+            warn(f'[!FAQ] question "{question}" has no answer; skipped')
+            continue
+        pairs.append((question, answer))
     return preamble, pairs
 
 
@@ -338,7 +368,7 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
             body = text[matched.end():]
 
             if name == "faq":
-                preamble, pairs = _split_faq(body)
+                preamble, pairs = _split_faq(body, warn=_warn)
                 if not pairs:
                     _warn(
                         "[!FAQ] callout has no questions (no **question** "
