@@ -102,13 +102,14 @@ def normalize_post_date(value, warn=None):
 
 class WordPressPost:
     def __init__(self, site_url, username, app_password,
-                 callout_config=None, resolve_bookmarks=True):
+                 callout_config=None, resolve_bookmarks=True, locale=None):
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
         self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
         self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
         self._callout_config = callout_config
+        self._locale = locale
         self._resolve_bookmarks = resolve_bookmarks
         self._bookmark_cache = {}  # slug -> resolved dict or None
         self.session = requests.Session()
@@ -148,6 +149,7 @@ class WordPressPost:
             image_handler=self._handle_image,
             callout_config=self._callout_config,
             bookmark_resolver=self._resolve_bookmark if self._resolve_bookmarks else None,
+            locale=self._locale,
         )
         blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 
@@ -1269,6 +1271,38 @@ def find_site_for_file(project_root, network_config, filepath):
             continue
         return site_key, site_info
     return None, None
+
+
+def resolve_locale_for_file(filepath):
+    """The declared locale of the network site a file belongs to, or None.
+
+    Reads on-disk config only - no network calls - so `--test` and a real
+    publish resolve callout labels through exactly the same path.
+
+    Best-effort by construction. The helpers it calls are not:
+    find_network_config json.load()s without a guard, and
+    find_site_for_file indexes site_info['content_path'] directly, so
+    malformed JSON or a site entry missing content_path raises. Those
+    already run on the publish path, but only when --site-url is absent;
+    this function runs unconditionally and under --test, so an exception
+    here would newly break paths that used to work. A label falling back
+    to English must never cost a publish.
+    """
+    try:
+        net_root, net_config = find_network_config(filepath)
+        if not net_config:
+            return None
+        site_key, site_info = find_site_for_file(net_root, net_config, filepath)
+        if not site_info:
+            return None
+        return resolve_site_identity(net_root, site_key, site_info).get('locale')
+    except Exception as e:
+        print(
+            f"⚠ Could not determine the site language for {filepath} ({e}); "
+            "using English callout labels",
+            file=sys.stderr,
+        )
+        return None
 
 
 def find_translation_siblings(project_root, network_config, translation_set, exclude_locale):
@@ -2423,12 +2457,15 @@ def main():
         print(f"Error: File '{args.file}' not found")
         sys.exit(1)
     
-    # Create poster instance and post
+    # Create poster instance and post. Language follows the file's site
+    # mapping, not --site-url: the content's language does not change
+    # based on where it is pushed.
     poster = WordPressPost(
         config['site_url'],
         config['username'],
         config['app_password'],
-        callout_config=config.get('callouts')
+        callout_config=config.get('callouts'),
+        locale=resolve_locale_for_file(args.file)
     )
 
     # Resolve format: CLI > frontmatter > config > default
