@@ -131,12 +131,33 @@ Gutenberg blocks coloured from the theme's palette:
 Type names are case-insensitive. A blockquote that does not start with a
 recognised `[!TYPE]` marker stays an ordinary `wp:quote`.
 
-`[!FAQ]` starts a new question only on a line that is entirely bold text
-(`**...**`) and that is either the first line of the body or is preceded
-by a blank line. A bold line stuck directly under the previous line, with
-no blank line above it, stays part of that answer instead of starting a
-new question - leave a blank line before every `**question**`, or the FAQ
-silently merges into one answer.
+`[!FAQ]` starts a new question on a line that is **entirely** bold text
+(`**...**`) and that is either the body's first line or preceded by a
+blank line. Both halves of that rule bite, in opposite directions:
+
+```markdown
+> [!FAQ]
+> **How long does setup take?**      <- first line: a question
+> About ten minutes.
+>
+> **Is there a free tier?**          <- blank line above: a question
+> Yes.
+> **Terms apply.**                   <- no blank line above: stays in the answer
+```
+
+So leave a blank line before every question, or the FAQ merges into one
+answer - and *do not* leave one before a bold lead-in inside an answer, or
+it becomes a spurious accordion with the wrong title.
+
+A lead-in with any text after the bold is never mistaken for a question,
+because the bold must be the whole line. That is the form to use:
+
+```markdown
+>
+> **Note:** this stays part of the answer.
+```
+
+See issue #20.
 
 `[!BOOKMARK]` accepts a slug, a `/path/`, or a full URL, and looks the
 target up through the REST API to build the card. Under `--test`, or when

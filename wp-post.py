@@ -2147,6 +2147,9 @@ callouts:
   A [!FAQ] question is a line that is entirely **bold** and is either
   the first line of the body or preceded by a blank line; otherwise it
   stays part of the previous answer instead of starting a new question.
+  The rule cuts both ways - a bold-only line after a blank line becomes a
+  question even mid-answer, so write lead-ins as "**Note:** text" with
+  the text on the same line, which is never mistaken for a question.
 
   Backgrounds come from the theme palette (tertiary), so callouts pick up
   the site's tint. Accents - border, icon, label - use GitHub's
