@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
 import pytest
+import requests
 import yaml
 
 wp_post = sys.modules["wp_post"]
@@ -2675,3 +2676,100 @@ class TestMainPurgeDispatch:
             wp_post.main()
         assert exc.value.code == 1
         assert "only valid with --purge" in capsys.readouterr().err
+
+
+class TestBookmarkResolution:
+    def _post_payload(self, **overrides):
+        payload = {
+            "title": {"rendered": "My Other Post"},
+            "link": "https://example.com/my-other-post/",
+            "excerpt": {"rendered": "<p>A short excerpt. [&hellip;]</p>"},
+        }
+        payload.update(overrides)
+        return payload
+
+    @patch('wp_post.requests.get')
+    def test_resolves_slug_from_path(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        data = wp._resolve_bookmark("/my-other-post/")
+        assert data["title"] == "My Other Post"
+        assert data["link"] == "https://example.com/my-other-post/"
+        assert mock_get.call_args.kwargs["params"]["slug"] == "my-other-post"
+
+    @patch('wp_post.requests.get')
+    def test_resolves_slug_from_full_url(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        wp._resolve_bookmark("https://example.com/my-other-post/")
+        assert mock_get.call_args.kwargs["params"]["slug"] == "my-other-post"
+
+    @patch('wp_post.requests.get')
+    def test_excerpt_is_stripped_of_html_and_more_marker(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["excerpt"] == "A short excerpt."
+
+    @patch('wp_post.requests.get')
+    def test_featured_image_is_read_from_embed(self, mock_get, wp, mock_response):
+        payload = self._post_payload(
+            featured_media=123,
+            _embedded={"wp:featuredmedia": [{"id": 123, "source_url": "https://example.com/t.jpg"}]},
+        )
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["image_url"] == "https://example.com/t.jpg"
+        assert data["image_id"] == 123
+
+    @patch('wp_post.requests.get')
+    def test_falls_back_to_pages_when_no_post_matches(self, mock_get, wp, mock_response):
+        mock_get.side_effect = [
+            mock_response(200, []),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert "/pages" in mock_get.call_args_list[1].args[0]
+
+    @patch('wp_post.requests.get')
+    def test_returns_none_when_nothing_matches(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [])
+        assert wp._resolve_bookmark("nope") is None
+
+    @patch('wp_post.requests.get')
+    def test_result_is_cached_per_instance(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        wp._resolve_bookmark("my-other-post")
+        wp._resolve_bookmark("my-other-post")
+        assert mock_get.call_count == 1
+
+    @patch('wp_post.requests.get')
+    def test_network_error_returns_none(self, mock_get, wp):
+        mock_get.side_effect = requests.RequestException("down")
+        assert wp._resolve_bookmark("my-other-post") is None
+
+
+class TestCalloutWiring:
+    def test_resolver_is_passed_to_the_converter(self, wp, md_file):
+        path = md_file({"title": "T"}, "> [!BOOKMARK]\n> /x/")
+        with patch.object(wp, '_resolve_bookmark', return_value=None) as resolver:
+            wp.parse_markdown_file(path)
+        resolver.assert_called_once_with("/x/")
+
+    def test_resolution_disabled_makes_no_lookup(self, md_file):
+        offline = wp_post.WordPressPost(
+            "https://example.com", "u", "p", resolve_bookmarks=False
+        )
+        path = md_file({"title": "T"}, "> [!BOOKMARK]\n> /x/")
+        with patch.object(offline, '_resolve_bookmark') as resolver:
+            _, content = offline.parse_markdown_file(path)
+        resolver.assert_not_called()
+        assert '<a href="/x/">' in content
+
+    def test_callout_config_reaches_the_converter(self, md_file):
+        poster = wp_post.WordPressPost(
+            "https://example.com", "u", "p",
+            callout_config={"types": {"note": {"label": "Hinweis"}}},
+        )
+        path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
+        _, content = poster.parse_markdown_file(path)
+        assert "Hinweis</strong>" in content

@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import argparse
 import base64
 import glob as glob_mod
+import html
 import json
 import os
 import re
@@ -56,12 +57,16 @@ def load_frontmatter(yaml_text):
 
 
 class WordPressPost:
-    def __init__(self, site_url, username, app_password):
+    def __init__(self, site_url, username, app_password,
+                 callout_config=None, resolve_bookmarks=True):
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
         self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
         self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
+        self._callout_config = callout_config
+        self._resolve_bookmarks = resolve_bookmarks
+        self._bookmark_cache = {}  # slug -> resolved dict or None
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         
@@ -95,7 +100,11 @@ class WordPressPost:
             markdown_content = content
 
         # Convert markdown to Gutenberg blocks using image handler
-        converter = GutenbergConverter(image_handler=self._handle_image)
+        converter = GutenbergConverter(
+            image_handler=self._handle_image,
+            callout_config=self._callout_config,
+            bookmark_resolver=self._resolve_bookmark if self._resolve_bookmarks else None,
+        )
         blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 
         return frontmatter, blocks_content
@@ -103,6 +112,81 @@ class WordPressPost:
     def _handle_image(self, image_url):
         """Image handler callback for the markdown converter."""
         return self.process_image_url(image_url)
+
+    def _resolve_bookmark(self, target):
+        """Resolve a [!BOOKMARK] target to card data, or None.
+
+        Accepts a bare slug, a /path/, or a full URL. Looks in posts
+        first, then pages. Results are cached for the life of this
+        instance so repeated links cost one request.
+        """
+        slug = self._bookmark_slug(target)
+        if not slug:
+            return None
+        if slug in self._bookmark_cache:
+            return self._bookmark_cache[slug]
+
+        result = None
+        for rest_base in ('posts', 'pages'):
+            try:
+                response = requests.get(
+                    f"{self.api_url}/{rest_base}",
+                    params={'slug': slug, '_embed': 'wp:featuredmedia'},
+                    auth=self.auth,
+                    timeout=15,
+                )
+            except requests.RequestException as e:
+                print(f"⚠ Bookmark lookup failed for {target}: {e}", file=sys.stderr)
+                break
+            if response.status_code != 200:
+                continue
+            try:
+                items = response.json()
+            except ValueError:
+                continue
+            if items:
+                result = self._bookmark_card_data(items[0])
+                break
+
+        self._bookmark_cache[slug] = result
+        return result
+
+    @staticmethod
+    def _bookmark_slug(target):
+        """Reduce a slug, /path/, or full URL to its final path segment."""
+        text = (target or '').strip()
+        if not text:
+            return None
+        if '://' in text:
+            text = urlparse(text).path
+        segments = [s for s in text.split('/') if s]
+        return segments[-1] if segments else None
+
+    @staticmethod
+    def _bookmark_card_data(item):
+        """Map a REST post/page object to the card fields the renderer wants."""
+        excerpt = item.get('excerpt', {}).get('rendered', '') or ''
+        excerpt = re.sub(r'<[^>]+>', '', excerpt)
+        excerpt = html.unescape(excerpt)
+        excerpt = re.sub(r'\[\s*(?:…|\.\.\.)\s*\]', '', excerpt)
+        excerpt = ' '.join(excerpt.split())
+        if len(excerpt) > 200:
+            excerpt = excerpt[:200].rsplit(' ', 1)[0] + '…'
+
+        image_url = None
+        image_id = None
+        media = (item.get('_embedded') or {}).get('wp:featuredmedia') or []
+        if media and isinstance(media[0], dict) and media[0].get('source_url'):
+            image_url = media[0]['source_url']
+            image_id = media[0].get('id') or item.get('featured_media')
+
+        return {
+            'title': html.unescape(item.get('title', {}).get('rendered', '')),
+            'link': item.get('link', ''),
+            'excerpt': excerpt,
+            'image_url': image_url,
+            'image_id': image_id,
+        }
 
     def parse_raw_file(self, filepath):
         """Parse file with frontmatter but keep content as-is (no markdown conversion)"""
@@ -2006,8 +2090,11 @@ def main():
             print(f"Error: File '{args.file}' not found")
             sys.exit(1)
 
-        # Create a dummy poster instance just for parsing (no image uploads in test mode)
-        poster = WordPressPost('https://example.com', 'user', 'pass')
+        # Create a dummy poster instance just for parsing (no bookmark
+        # lookups in test mode - the dummy site URL is not real)
+        poster = WordPressPost('https://example.com', 'user', 'pass',
+                               callout_config=load_config().get('callouts'),
+                               resolve_bookmarks=False)
 
         # Resolve format: CLI > frontmatter > config > default
         config = load_config()
@@ -2121,7 +2208,8 @@ def main():
     poster = WordPressPost(
         config['site_url'],
         config['username'],
-        config['app_password']
+        config['app_password'],
+        callout_config=config.get('callouts')
     )
 
     # Resolve format: CLI > frontmatter > config > default
