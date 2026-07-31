@@ -3131,3 +3131,41 @@ class TestPosterCarriesLocale:
         poster = WordPressPost("https://e.com", "u", "p", resolve_bookmarks=False)
         _, blocks = poster.parse_markdown_file(str(article))
         assert "Warning</strong>" in blocks
+
+
+class TestTestModeLocale:
+    def _german_project(self, tmp_path):
+        (tmp_path / "content" / "de").mkdir(parents=True)
+        (tmp_path / ".wp-poster.json").write_text(json.dumps({
+            "network": {"sites": {
+                "de": {"content_path": "content/de", "site_url": "https://e.com/de",
+                       "locale": "de_DE", "blog_id": 3},
+            }}
+        }))
+        article = tmp_path / "content" / "de" / "artikel.md"
+        article.write_text("---\ntitle: Titel\n---\n\n> [!WARNING]\n> Vorsicht.\n")
+        return article
+
+    def test_test_mode_previews_the_sites_language(self, tmp_path, capsys):
+        # Drives main() end to end: this is the only test that proves the
+        # CLI wires the locale in. Constructing a WordPressPost by hand
+        # here would pass even with the wiring deleted.
+        article = self._german_project(tmp_path)
+        argv = ["wp-post", str(article), "--test", "--markdown"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "Warnung</strong>" in out
+        assert "Warning</strong>" not in out
+
+    def test_test_mode_outside_a_network_project_previews_english(self, tmp_path, capsys):
+        article = tmp_path / "post.md"
+        article.write_text("---\ntitle: Title\n---\n\n> [!WARNING]\n> Careful.\n")
+        argv = ["wp-post", str(article), "--test", "--markdown"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 0
+        assert "Warning</strong>" in capsys.readouterr().out

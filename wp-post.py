@@ -2344,10 +2344,13 @@ def main():
             sys.exit(1)
 
         # Create a dummy poster instance just for parsing (no bookmark
-        # lookups in test mode - the dummy site URL is not real)
+        # lookups in test mode - the dummy site URL is not real). The
+        # locale is still resolved for real, so --test previews the same
+        # callout labels a publish would emit.
         poster = WordPressPost('https://example.com', 'user', 'pass',
                                callout_config=load_config().get('callouts'),
-                               resolve_bookmarks=False)
+                               resolve_bookmarks=False,
+                               locale=resolve_locale_for_file(args.file))
 
         # Resolve format: CLI > frontmatter > config > default
         config = load_config()
