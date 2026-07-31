@@ -133,3 +133,113 @@ class TestIconHtml:
         cfg = callouts.merge_config(None)
         for name in callouts.CALLOUT_TYPES:
             assert callouts.icon_html(name, cfg).startswith("<svg"), name
+
+
+from gutenberg import GutenbergConverter
+
+
+def convert(md, **kwargs):
+    return GutenbergConverter(image_handler=lambda url: (url, None), **kwargs).convert(md)
+
+
+class TestSimpleCallouts:
+    def test_note_emits_a_group_not_a_quote(self):
+        result = convert("> [!NOTE]\n> A note.")
+        assert "wp:group" in result
+        assert "wp:quote" not in result
+
+    def test_note_carries_both_classes(self):
+        result = convert("> [!NOTE]\n> A note.")
+        assert 'class="wp-block-group is-callout is-callout-note' in result
+
+    def test_note_label_and_body_present(self):
+        result = convert("> [!NOTE]\n> A note.")
+        assert "Note</strong>" in result
+        assert "A note." in result
+
+    def test_background_slug_becomes_class_and_attribute(self):
+        result = convert("> [!NOTE]\n> A note.")
+        assert '"backgroundColor":"tertiary"' in result
+        assert "has-tertiary-background-color has-background" in result
+
+    def test_accent_slug_becomes_preset_reference_and_css_var(self):
+        result = convert("> [!NOTE]\n> A note.")
+        assert '"color":"var:preset|color|primary"' in result
+        assert "border-left-color:var(--wp--preset--color--primary)" in result
+
+    def test_border_declares_a_style_so_it_is_visible(self):
+        # border-style defaults to none, which zeroes border-width, so a
+        # colour and width alone would render nothing at all.
+        result = convert("> [!NOTE]\n> A note.")
+        assert "border-left-style:solid" in result
+        assert '"style":"solid"' in result
+
+    def test_malformed_config_still_renders(self):
+        result = convert("> [!NOTE]\n> Body.", callout_config={"types": {"note": None}})
+        assert "is-callout-note" in result
+        assert "Note</strong>" in result
+
+    def test_hex_accent_config_emits_literal(self):
+        cfg = {"types": {"caution": {"color": "#cf2e2e"}}}
+        result = convert("> [!CAUTION]\n> Danger.", callout_config=cfg)
+        assert "border-left-color:#cf2e2e" in result
+        assert "var:preset|color|#cf2e2e" not in result
+
+    def test_hex_background_config_emits_style_not_class(self):
+        result = convert("> [!NOTE]\n> A note.", callout_config={"background": "#eeeeee"})
+        assert "background-color:#eeeeee" in result
+        assert "has-background" in result
+        assert '"backgroundColor"' not in result
+
+    def test_label_override_is_used(self):
+        cfg = {"types": {"note": {"label": "Hinweis"}}}
+        result = convert("> [!NOTE]\n> A note.", callout_config=cfg)
+        assert "Hinweis</strong>" in result
+        assert "Note</strong>" not in result
+
+    def test_icon_is_svg_inheriting_current_color(self):
+        result = convert("> [!TIP]\n> A tip.")
+        assert 'fill="currentColor"' in result
+
+    def test_all_five_gfm_types_still_recognised(self):
+        for name in ("note", "tip", "important", "warning", "caution"):
+            result = convert(f"> [!{name.upper()}]\n> Body.")
+            assert f"is-callout-{name}" in result, name
+
+    def test_summary_renders_a_list_as_a_list_block(self):
+        md = "> [!SUMMARY]\n> - First point\n> - Second point"
+        result = convert(md)
+        assert "is-callout-summary" in result
+        assert "wp:list" in result
+        assert "First point" in result
+        assert "Second point" in result
+
+    def test_case_insensitive(self):
+        assert "is-callout-important" in convert("> [!important]\n> Body.")
+
+    def test_multiple_paragraphs_preserved(self):
+        md = "> [!NOTE]\n>\n> First paragraph.\n>\n> Second paragraph."
+        result = convert(md)
+        assert "First paragraph." in result
+        assert "Second paragraph." in result
+
+    def test_inline_formatting_preserved(self):
+        result = convert("> [!TIP]\n> Use `code` and **bold**.")
+        assert "<code>code</code>" in result
+        assert "<strong>bold</strong>" in result
+
+    def test_regular_blockquote_untouched(self):
+        result = convert("> Just a quote.")
+        assert "is-callout" not in result
+        assert "wp:quote" in result
+
+    def test_block_attributes_are_valid_json(self):
+        import json
+        import re as _re
+
+        result = convert("> [!NOTE]\n> A note.")
+        raw = _re.search(r"<!-- wp:group (\{.*?\}) -->", result).group(1)
+        attrs = json.loads(raw)
+        assert attrs["className"] == "is-callout is-callout-note"
+        assert attrs["style"]["border"]["left"]["width"] == "4px"
+        assert attrs["style"]["border"]["left"]["style"] == "solid"

@@ -10,6 +10,7 @@ matches the site it lands on. A config value that looks like a hex
 literal is used as-is; anything else is treated as a palette slug.
 """
 
+import json
 import re
 import sys
 
@@ -201,3 +202,139 @@ def icon_html(type_name, cfg):
     if override is not None:
         return override
     return _SVG_TEMPLATE.format(path=_ICON_PATHS[type_name])
+
+
+_CALLOUT_RE = re.compile(
+    r"^\[!(" + "|".join(CALLOUT_TYPES) + r")\]\s*\n?",
+    re.IGNORECASE,
+)
+
+
+def _group_attrs(type_name, cfg):
+    """Block attributes for a callout's wrapping core/group."""
+    accent = cfg["types"][type_name]["color"]
+    background = cfg["background"]
+    padding = cfg["padding"]
+
+    attrs = {"className": f"is-callout is-callout-{type_name}"}
+    style = {
+        # "style":"solid" is mandatory, not decorative: the CSS initial
+        # value of border-style is none, which computes border-width to
+        # 0. Colour and width alone render no border at all.
+        "border": {
+            "left": {"color": color_attr(accent), "width": "4px", "style": "solid"}
+        },
+        "spacing": {
+            "padding": {
+                "top": padding,
+                "right": padding,
+                "bottom": padding,
+                "left": padding,
+            }
+        },
+    }
+    if _HEX_RE.match(background):
+        style["color"] = {"background": background}
+    else:
+        attrs["backgroundColor"] = background
+    attrs["style"] = style
+    attrs["layout"] = {"type": "constrained"}
+    return attrs
+
+
+def _group_open(type_name, cfg):
+    """Opening comment and <div> for a callout's wrapping core/group."""
+    accent = cfg["types"][type_name]["color"]
+    background = cfg["background"]
+    padding = cfg["padding"]
+    attrs = _group_attrs(type_name, cfg)
+
+    classes = ["wp-block-group", "is-callout", f"is-callout-{type_name}"]
+    styles = [
+        f"border-left-color:{color_css(accent)}",
+        "border-left-width:4px",
+        "border-left-style:solid",
+    ]
+    if _HEX_RE.match(background):
+        classes.append("has-background")
+        styles.append(f"background-color:{color_css(background)}")
+    else:
+        classes.append(f"has-{background}-background-color")
+        classes.append("has-background")
+    for side in ("top", "right", "bottom", "left"):
+        styles.append(f"padding-{side}:{padding}")
+
+    return (
+        f"<!-- wp:group {json.dumps(attrs, separators=(',', ':'))} -->\n"
+        f'<div class="{" ".join(classes)}" style="{";".join(styles)}">\n'
+    )
+
+
+_GROUP_CLOSE = "</div>\n<!-- /wp:group -->\n\n"
+
+
+def _label_block(type_name, cfg):
+    """The coloured, icon-prefixed label paragraph."""
+    accent = cfg["types"][type_name]["color"]
+    label = cfg["types"][type_name]["label"]
+    icon = icon_html(type_name, cfg)
+    attrs = {
+        "className": "is-callout-label",
+        "style": {"color": {"text": color_attr(accent)}},
+    }
+    return (
+        f"<!-- wp:paragraph {json.dumps(attrs, separators=(',', ':'))} -->\n"
+        f'<p class="is-callout-label has-text-color" style="color:{color_css(accent)}">'
+        f"<strong>{icon}{label}</strong></p>\n"
+        f"<!-- /wp:paragraph -->\n\n"
+    )
+
+
+def callout_plugin(config=None, bookmark_resolver=None, warn=None):
+    """Build a mistune plugin rendering callouts with this configuration."""
+    cfg = merge_config(config, warn=warn)
+    _warn = warn or _default_warn
+
+    def parse(block, m, state):
+        """Replace the block_quote parser; emit callout or block_quote."""
+        text, end_pos = block.extract_block_quote(m, state)
+        if not text.endswith("\n"):
+            text += "\n"
+
+        matched = _CALLOUT_RE.match(text)
+        if state.depth() >= block.max_nested_level - 1:
+            rules = list(block.block_quote_rules)
+            rules.remove("block_quote")
+        else:
+            rules = block.block_quote_rules
+
+        if not matched:
+            child = state.child_state(text)
+            block.parse(child, rules)
+            token = {"type": "block_quote", "children": child.tokens, "attrs": {}}
+        else:
+            name = matched.group(1).lower()
+            body = text[matched.end():]
+            child = state.child_state(body)
+            block.parse(child, rules)
+            token = {
+                "type": "callout",
+                "children": child.tokens,
+                "attrs": {"name": name},
+            }
+
+        if end_pos:
+            state.prepend_token(token)
+            return end_pos
+        state.append_token(token)
+        return state.cursor
+
+    def render_callout(renderer, text, name):
+        return _group_open(name, cfg) + _label_block(name, cfg) + text + _GROUP_CLOSE
+
+    def plugin(md):
+        md.block.register("block_quote", None, parse)
+        if md.renderer and md.renderer.NAME == "html":
+            md.renderer.register("callout", render_callout)
+
+    return plugin
