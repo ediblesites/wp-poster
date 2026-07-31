@@ -2067,6 +2067,26 @@ images:
   cannot be scoped and will upload fresh on each run.
   --test mode skips all uploads.
 
+callouts:
+  Eight callout types are written as GFM blockquotes in markdown mode:
+    [!NOTE] [!TIP] [!IMPORTANT] [!WARNING] [!CAUTION]  bordered group
+    [!SUMMARY]   key points; write a markdown list
+    [!FAQ]       wp:details accordion, one per **question** line
+    [!BOOKMARK]  post card resolved from a slug, /path/, or URL
+
+  A [!FAQ] question is a line that is entirely **bold** and is either
+  the first line of the body or preceded by a blank line; otherwise it
+  stays part of the previous answer instead of starting a new question.
+
+  Colours come from the theme palette by default (tertiary background,
+  primary accent). Override per type in .wp-poster.json under "callouts",
+  where a value like "#cf2e2e" is used as a literal and anything else is
+  treated as a palette slug. See the wp-post skill for the full schema.
+
+  Icons are inline SVG and need the unfiltered_html capability to survive
+  WordPress's content filter; wp-post warns after publishing if they were
+  stripped.
+
 output:
   Omit id to create a new post; include id to update an existing one.
 
