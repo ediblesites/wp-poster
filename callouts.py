@@ -139,9 +139,105 @@ DEFAULT_CONFIG = {
 }
 
 
+# Labels are the only English wp-poster puts on the page itself - FAQ
+# questions are authored in the post and bookmark cards come from
+# WordPress, so both are already in the right language. Eleven languages
+# ship: the six payperfax publishes, plus five ahead of need.
+#
+# `bookmark` is a slot label, not a phrase to translate. The slot means
+# "one related post the author picked", and each language uses its own
+# blog-native label for it. A literal "Read next" everywhere (次に読む,
+# Als Nächstes lesen) would be accurate and read as machine output.
+_LABELS = {
+    "en": {
+        "note": "Note", "tip": "Tip", "important": "Important",
+        "warning": "Warning", "caution": "Caution", "summary": "In short",
+        "faq": "Frequently asked questions", "bookmark": "Read next",
+    },
+    "de": {
+        "note": "Hinweis", "tip": "Tipp", "important": "Wichtig",
+        "warning": "Warnung", "caution": "Vorsicht", "summary": "Kurz gesagt",
+        "faq": "Häufige Fragen", "bookmark": "Weiterlesen",
+    },
+    "es": {
+        "note": "Nota", "tip": "Consejo", "important": "Importante",
+        "warning": "Advertencia", "caution": "Precaución",
+        "summary": "En resumen", "faq": "Preguntas frecuentes",
+        "bookmark": "Sigue leyendo",
+    },
+    "fr": {
+        "note": "Note", "tip": "Astuce", "important": "Important",
+        "warning": "Avertissement", "caution": "Attention",
+        "summary": "En bref", "faq": "Questions fréquentes",
+        "bookmark": "À lire ensuite",
+    },
+    "it": {
+        "note": "Nota", "tip": "Suggerimento", "important": "Importante",
+        "warning": "Avvertenza", "caution": "Attenzione",
+        "summary": "In breve", "faq": "Domande frequenti",
+        "bookmark": "Leggi anche",
+    },
+    "ja": {
+        "note": "注記", "tip": "ヒント", "important": "重要",
+        "warning": "警告", "caution": "注意", "summary": "要点",
+        "faq": "よくある質問", "bookmark": "あわせて読みたい",
+    },
+    "ko": {
+        "note": "참고", "tip": "팁", "important": "중요",
+        "warning": "경고", "caution": "주의", "summary": "요약",
+        "faq": "자주 묻는 질문", "bookmark": "이어서 읽기",
+    },
+    "zh": {
+        "note": "备注", "tip": "提示", "important": "重要",
+        "warning": "警告", "caution": "注意", "summary": "摘要",
+        "faq": "常见问题", "bookmark": "延伸阅读",
+    },
+    "th": {
+        "note": "หมายเหตุ", "tip": "เคล็ดลับ", "important": "สำคัญ",
+        "warning": "คำเตือน", "caution": "ข้อควรระวัง", "summary": "สรุป",
+        "faq": "คำถามที่พบบ่อย", "bookmark": "อ่านต่อ",
+    },
+    "ar": {
+        "note": "ملاحظة", "tip": "نصيحة", "important": "مهم",
+        "warning": "تحذير", "caution": "تنبيه", "summary": "باختصار",
+        "faq": "الأسئلة الشائعة", "bookmark": "اقرأ أيضًا",
+    },
+    "he": {
+        "note": "הערה", "tip": "טיפ", "important": "חשוב",
+        "warning": "אזהרה", "caution": "זהירות", "summary": "בקצרה",
+        "faq": "שאלות נפוצות", "bookmark": "להמשך קריאה",
+    },
+}
+
+
 def _default_warn(message):
     """Warn on stderr without failing the publish."""
     print(f"⚠ {message}", file=sys.stderr)
+
+
+def resolve_lang(locale, warn=None):
+    """Table key for a WordPress locale. Always returns a key in _LABELS.
+
+    Tries the full locale before its language prefix, so a `zh_tw` table
+    can be added later without touching this function. A locale whose
+    language has no entry warns and takes English; a missing or malformed
+    locale takes English silently, because that is the documented default
+    rather than a failure.
+    """
+    if not isinstance(locale, str):
+        return "en"
+    normalised = locale.strip().lower()
+    if normalised in _LABELS:
+        return normalised
+    prefix = normalised.split("_")[0]
+    if not prefix:
+        return "en"
+    if prefix in _LABELS:
+        return prefix
+    (warn or _default_warn)(
+        f"no callout labels for language '{prefix}'; using English"
+    )
+    return "en"
 
 
 def _clean_str(value, fallback):

@@ -745,3 +745,51 @@ class TestBookmarkCardBuildingNet:
         )
         assert "wp:media-text" in result
         assert "could not be built" not in capsys.readouterr().err.lower()
+
+
+class TestResolveLang:
+    def test_locale_with_region_takes_the_language(self):
+        assert callouts.resolve_lang("de_DE") == "de"
+
+    def test_bare_language_locale(self):
+        assert callouts.resolve_lang("ja") == "ja"
+
+    def test_traditional_chinese_falls_back_to_the_language(self):
+        # No zh_tw entry ships, so zh_TW takes Simplified. The two-step
+        # lookup means adding one later needs no resolver change.
+        assert callouts.resolve_lang("zh_TW") == "zh"
+
+    def test_unknown_language_warns_and_uses_english(self):
+        warnings = []
+        assert callouts.resolve_lang("pt_BR", warn=warnings.append) == "en"
+        assert len(warnings) == 1
+        assert "'pt'" in warnings[0]
+
+    def test_no_locale_is_english_without_a_warning(self):
+        warnings = []
+        assert callouts.resolve_lang(None, warn=warnings.append) == "en"
+        assert callouts.resolve_lang("  ", warn=warnings.append) == "en"
+        assert warnings == []
+
+    def test_non_string_locale_is_english_without_raising(self):
+        assert callouts.resolve_lang(42) == "en"
+
+
+class TestLabelTable:
+    def test_every_language_covers_every_type(self):
+        for lang, labels in callouts._LABELS.items():
+            assert set(labels) == set(callouts.CALLOUT_TYPES), lang
+
+    def test_all_eleven_languages_ship(self):
+        assert set(callouts._LABELS) == {
+            "en", "de", "es", "fr", "it", "ja", "ko", "zh", "th", "ar", "he"
+        }
+
+    def test_spot_checks(self):
+        assert callouts._LABELS["en"]["bookmark"] == "Read next"
+        assert callouts._LABELS["de"]["warning"] == "Warnung"
+        # 注記, not メモ - payperfax's content is registry and filing
+        # procedure, which reads formal.
+        assert callouts._LABELS["ja"]["note"] == "注記"
+        # Avviso reads as "notice"; Avvertenza carries the warning sense.
+        assert callouts._LABELS["it"]["warning"] == "Avvertenza"
