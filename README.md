@@ -284,13 +284,8 @@ clear; see `docs/superpowers/specs/2026-07-27-cache-purge-design.md`.
 
 ## Claude Code Skill
 
-This repo includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin with a `/wp-post` skill that teaches Claude how to publish and update posts using wp-post — including frontmatter authoring, format selection, and the create-then-update-local-file loop.
+This repo includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that teaches Claude how to publish and update posts using wp-post - covering frontmatter authoring, format selection, callouts, and the create-then-update-local-file loop.
 
-### Install
+`./install.sh` installs it to `~/.claude/skills/wp-post/` alongside the CLI, so there is one install step for both. Then use `/wp-post`, or just ask Claude to publish a file to WordPress.
 
-```bash
-/plugin marketplace add ediblesites/cc-plugins
-/plugin install wp-poster@ediblesites
-```
-
-Then use `/wp-post` or just ask Claude to publish a file to WordPress.
+The skill is copied, not symlinked. Editing `skills/wp-post/SKILL.md` does not change the installed copy until you re-run `./install.sh`.
