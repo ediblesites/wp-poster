@@ -560,3 +560,88 @@ class TestBookmarkMalformedImageId:
         result = self._render(123)
         assert '"mediaId":123' in result
         assert 'class="wp-image-123"' in result
+
+
+class _Boom:
+    """A value whose __str__ raises, simulating a hostile resolver field."""
+
+    def __str__(self):
+        raise ValueError("str boom")
+
+
+class _HostileDict(dict):
+    """A dict subclass whose .get() raises.
+
+    isinstance(data, dict) does not protect against this - it's a real
+    dict by type, it just misbehaves when used.
+    """
+
+    def get(self, *args, **kwargs):
+        raise RuntimeError("get boom")
+
+
+class TestBookmarkCardBuildingNet:
+    """The specific guards (rounds 1-2) cover the shape of the resolver's
+    return value and its image_id. They can't cover every way a field
+    might misbehave once consumed - a value whose __str__ raises, or a
+    dict subclass whose own .get() raises. Rather than patch each such
+    site individually, card-building itself is wrapped in a try/except
+    that degrades to the plain link card, the same landing spot every
+    other bookmark failure mode already uses.
+    """
+
+    def test_title_str_raises_warns_with_exception_text_and_falls_back(self, capsys):
+        result = convert(
+            "> [!BOOKMARK]\n> /x/",
+            bookmark_resolver=lambda target: dict(FULL_BOOKMARK, title=_Boom()),
+        )
+        assert "is-callout-bookmark" in result
+        assert '<a href="/x/">' in result
+        assert "str boom" in capsys.readouterr().err
+
+    def test_image_url_str_raises_warns_with_exception_text_and_falls_back(self, capsys):
+        result = convert(
+            "> [!BOOKMARK]\n> /x/",
+            bookmark_resolver=lambda target: dict(FULL_BOOKMARK, image_url=_Boom()),
+        )
+        assert "is-callout-bookmark" in result
+        assert '<a href="/x/">' in result
+        assert "str boom" in capsys.readouterr().err
+
+    def test_dict_subclass_with_hostile_get_warns_and_falls_back(self, capsys):
+        result = convert(
+            "> [!BOOKMARK]\n> /x/",
+            bookmark_resolver=lambda target: _HostileDict(FULL_BOOKMARK),
+        )
+        assert "is-callout-bookmark" in result
+        assert '<a href="/x/">' in result
+        assert "get boom" in capsys.readouterr().err
+
+    def test_well_formed_dict_still_produces_a_full_card(self):
+        # The net must not fire, or degrade output, for the ordinary path.
+        result = convert(
+            "> [!BOOKMARK]\n> /my-other-post/",
+            bookmark_resolver=lambda target: FULL_BOOKMARK,
+        )
+        assert "wp:media-text" in result
+        assert "could not be built" not in result
+
+    def test_non_dict_return_is_still_caught_by_the_round_1_guard(self, capsys):
+        # Must warn with the round-1 message, not the net's - it should
+        # never reach the try/except this test class is otherwise about.
+        result = convert(
+            "> [!BOOKMARK]\n> /x/", bookmark_resolver=lambda target: "not a dict"
+        )
+        err = capsys.readouterr().err.lower()
+        assert "expected a dict" in err
+        assert "could not be built" not in err
+
+    def test_bad_image_id_is_still_caught_by_the_round_2_guard(self, capsys):
+        # Must still produce a media-text card, not degrade to a link
+        # card, and must not emit the net's warning.
+        result = convert(
+            "> [!BOOKMARK]\n> /x/",
+            bookmark_resolver=lambda target: dict(FULL_BOOKMARK, image_id={1, 2, 3}),
+        )
+        assert "wp:media-text" in result
+        assert "could not be built" not in capsys.readouterr().err.lower()

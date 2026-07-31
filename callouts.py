@@ -469,9 +469,22 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None):
 
         if data is None:
             return _bookmark_link_card(target)
-        if data.get("image_url"):
-            return _bookmark_media_text(data)
-        return _bookmark_group_card(data)
+        # The two guards above only cover the shape of `data` itself; they
+        # can't cover every way a field inside it might misbehave once
+        # consumed (a value whose __str__ raises, a dict subclass whose
+        # .get() raises, ...). Rather than chase each one individually,
+        # this net catches whatever they miss and still degrades to a
+        # usable card instead of failing the publish.
+        try:
+            if data.get("image_url"):
+                return _bookmark_media_text(data)
+            return _bookmark_group_card(data)
+        except Exception as exc:
+            _warn(
+                f"bookmark card could not be built for {target}: {exc}; "
+                "using a plain link"
+            )
+            return _bookmark_link_card(target)
 
     def _bookmark_media_text(data):
         image_url = escape(str(data["image_url"]), quote=True)
