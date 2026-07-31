@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import argparse
 import base64
 import glob as glob_mod
+import html
 import json
 import os
 import re
@@ -56,12 +57,16 @@ def load_frontmatter(yaml_text):
 
 
 class WordPressPost:
-    def __init__(self, site_url, username, app_password):
+    def __init__(self, site_url, username, app_password,
+                 callout_config=None, resolve_bookmarks=True):
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
         self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
         self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
+        self._callout_config = callout_config
+        self._resolve_bookmarks = resolve_bookmarks
+        self._bookmark_cache = {}  # slug -> resolved dict or None
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         
@@ -95,7 +100,11 @@ class WordPressPost:
             markdown_content = content
 
         # Convert markdown to Gutenberg blocks using image handler
-        converter = GutenbergConverter(image_handler=self._handle_image)
+        converter = GutenbergConverter(
+            image_handler=self._handle_image,
+            callout_config=self._callout_config,
+            bookmark_resolver=self._resolve_bookmark if self._resolve_bookmarks else None,
+        )
         blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 
         return frontmatter, blocks_content
@@ -103,6 +112,190 @@ class WordPressPost:
     def _handle_image(self, image_url):
         """Image handler callback for the markdown converter."""
         return self.process_image_url(image_url)
+
+    def _resolve_bookmark(self, target):
+        """Resolve a [!BOOKMARK] target to card data, or None.
+
+        Accepts a bare slug, a /path/, or a full URL. Looks in posts
+        first, then pages. Results are cached for the life of this
+        instance so repeated links cost one request.
+        """
+        slug = self._bookmark_slug(target)
+        if not slug:
+            return None
+        if slug in self._bookmark_cache:
+            return self._bookmark_cache[slug]
+
+        result = None
+        for rest_base in ('posts', 'pages'):
+            try:
+                response = requests.get(
+                    f"{self.api_url}/{rest_base}",
+                    params={'slug': slug, '_embed': 'wp:featuredmedia'},
+                    auth=self.auth,
+                    timeout=15,
+                )
+            except requests.RequestException as e:
+                # A network-level failure almost certainly repeats against
+                # the same host/credentials on the next rest_base, so we
+                # stop here rather than eating a second 15s timeout for no
+                # benefit.
+                print(f"⚠ Bookmark lookup failed for {target}: {e}", file=sys.stderr)
+                break
+            if response.status_code != 200:
+                continue
+            try:
+                items = response.json()
+            except ValueError:
+                continue
+            if not isinstance(items, list):
+                print(
+                    f"⚠ Bookmark lookup for {target} got an unexpected {rest_base} "
+                    f"response (expected a list, got {type(items).__name__}); skipping",
+                    file=sys.stderr,
+                )
+                continue
+            if not items:
+                continue
+            if not isinstance(items[0], dict):
+                print(
+                    f"⚠ Bookmark lookup for {target} got an unexpected {rest_base} "
+                    f"response (list item is {type(items[0]).__name__}, not an "
+                    f"object); skipping",
+                    file=sys.stderr,
+                )
+                continue
+            # The item passed the shape gate above, but individual nested
+            # fields (title/excerpt/_embedded) can still be malformed in
+            # ways _bookmark_card_data tolerates by degrading that one
+            # field rather than the whole item - warn_field surfaces those
+            # so a misbehaving proxy/plugin is visible, without discarding
+            # an otherwise-usable card over one bad field. A totally
+            # unanticipated failure (a hostile dict subclass, etc.) is
+            # still caught below and treated the same as a malformed
+            # response: not a match for this rest_base, not a reason to
+            # skip pages or leave the slug uncached.
+            def warn_field(msg):
+                print(f"⚠ Bookmark lookup for {target} got a malformed {rest_base} response ({msg})", file=sys.stderr)
+
+            try:
+                result = self._bookmark_card_data(items[0], warn=warn_field)
+            except Exception as e:
+                print(
+                    f"⚠ Bookmark lookup for {target} could not parse the "
+                    f"{rest_base} response ({e}); skipping",
+                    file=sys.stderr,
+                )
+                continue
+            break
+
+        self._bookmark_cache[slug] = result
+        return result
+
+    def _warn_if_svg_stripped(self, sent_content, post):
+        """Warn once if WordPress dropped the callout icons on save.
+
+        kses strips <svg> for any user without unfiltered_html, which on
+        multisite means anyone who is not a super admin. An absent or
+        empty rendered field is not evidence of stripping, so stay quiet.
+        """
+        if '<svg' not in (sent_content or ''):
+            return False
+        rendered = (post.get('content') or {}).get('rendered') or ''
+        if not rendered or '<svg' in rendered:
+            return False
+        print(
+            "⚠ Callout icons were stripped by WordPress. The publishing user "
+            "lacks the unfiltered_html capability, which removes <svg> from "
+            "post content on save. Grant unfiltered_html to this user to keep "
+            "the icons.",
+            file=sys.stderr,
+        )
+        return True
+
+    @staticmethod
+    def _bookmark_slug(target):
+        """Reduce a slug, /path/, or full URL to its final path segment."""
+        text = (target or '').strip()
+        if not text:
+            return None
+        if '://' in text:
+            text = urlparse(text).path
+        segments = [s for s in text.split('/') if s]
+        return segments[-1] if segments else None
+
+    @staticmethod
+    def _bookmark_rendered_field(item, key, warn=None):
+        """Read a WP REST {'rendered': ...} field, tolerating a malformed shape.
+
+        `title` and `excerpt` are normally {'rendered': str, 'raw': str}
+        objects. A field that's simply absent (not requested, stripped by
+        a filter, a post type without an excerpt) is a normal partial
+        response and yields '' silently. A field that's *present* but not
+        that dict shape (a bare string, an explicit null, a list...) is a
+        sign something is genuinely off about the response, so it's
+        reported via `warn` before also falling back to ''.
+        """
+        if key not in item:
+            return ''
+        value = item[key]
+        if isinstance(value, dict):
+            return value.get('rendered', '') or ''
+        if warn:
+            warn(f"{key} is a {type(value).__name__}, not an object; treating as empty")
+        return ''
+
+    @staticmethod
+    def _bookmark_featured_media(item, warn=None):
+        """Extract the embedded featured-media list item, tolerating a malformed shape.
+
+        `_embedded` (and `_embedded['wp:featuredmedia']`) being absent is
+        the normal case when `_embed` wasn't honored or the post has no
+        featured image - silent, no image. Either being present but not
+        the expected object/list shape is warned about, then also treated
+        as "no image" rather than raising.
+        """
+        if '_embedded' not in item:
+            return []
+        embedded = item['_embedded']
+        if not isinstance(embedded, dict):
+            if warn:
+                warn(f"_embedded is a {type(embedded).__name__}, not an object; skipping featured image")
+            return []
+        if 'wp:featuredmedia' not in embedded:
+            return []
+        media = embedded['wp:featuredmedia']
+        if not isinstance(media, list):
+            if warn:
+                warn(f"wp:featuredmedia is a {type(media).__name__}, not a list; skipping featured image")
+            return []
+        return media
+
+    @staticmethod
+    def _bookmark_card_data(item, warn=None):
+        """Map a REST post/page object to the card fields the renderer wants."""
+        excerpt = WordPressPost._bookmark_rendered_field(item, 'excerpt', warn)
+        excerpt = re.sub(r'<[^>]+>', '', excerpt)
+        excerpt = html.unescape(excerpt)
+        excerpt = re.sub(r'\[\s*(?:…|\.\.\.)\s*\]', '', excerpt)
+        excerpt = ' '.join(excerpt.split())
+        if len(excerpt) > 200:
+            excerpt = excerpt[:200].rsplit(' ', 1)[0] + '…'
+
+        image_url = None
+        image_id = None
+        media = WordPressPost._bookmark_featured_media(item, warn)
+        if media and isinstance(media[0], dict) and media[0].get('source_url'):
+            image_url = media[0]['source_url']
+            image_id = media[0].get('id') or item.get('featured_media')
+
+        return {
+            'title': html.unescape(WordPressPost._bookmark_rendered_field(item, 'title', warn)),
+            'link': item.get('link', ''),
+            'excerpt': excerpt,
+            'image_url': image_url,
+            'image_id': image_id,
+        }
 
     def parse_raw_file(self, filepath):
         """Parse file with frontmatter but keep content as-is (no markdown conversion)"""
@@ -532,6 +725,7 @@ class WordPressPost:
         if response.status_code in [200, 201]:
             post = response.json()
             post_id = post['id']
+            self._warn_if_svg_stripped(post_data.get('content', ''), post)
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))
@@ -1873,6 +2067,31 @@ images:
   cannot be scoped and will upload fresh on each run.
   --test mode skips all uploads.
 
+callouts:
+  Eight callout types are written as GFM blockquotes in markdown mode:
+    [!NOTE] [!TIP] [!IMPORTANT] [!WARNING] [!CAUTION]  bordered group
+    [!SUMMARY]   key points; write a markdown list
+    [!FAQ]       wp:details accordion, one per **question** line
+    [!BOOKMARK]  post card resolved from a slug, /path/, or URL
+
+  A [!FAQ] question is a line that is entirely **bold** and is either
+  the first line of the body or preceded by a blank line; otherwise it
+  stays part of the previous answer instead of starting a new question.
+
+  Backgrounds come from the theme palette (tertiary), so callouts pick up
+  the site's tint. Accents - border, icon, label - use GitHub's
+  conventional hues for the five GFM types (note #0969da, tip #1a7f37,
+  important #8250df, warning #9a6700, caution #d1242f). SUMMARY, FAQ, and
+  BOOKMARK have no such convention and use the theme's
+  primary-alt-accent.
+  Override per type in .wp-poster.json under "callouts", where a value
+  like "#cf2e2e" is used as a literal and anything else is treated as a
+  palette slug. See the wp-post skill for the full schema.
+
+  Icons are inline SVG and need the unfiltered_html capability to survive
+  WordPress's content filter; wp-post warns after publishing if they were
+  stripped.
+
 output:
   Omit id to create a new post; include id to update an existing one.
 
@@ -2006,8 +2225,11 @@ def main():
             print(f"Error: File '{args.file}' not found")
             sys.exit(1)
 
-        # Create a dummy poster instance just for parsing (no image uploads in test mode)
-        poster = WordPressPost('https://example.com', 'user', 'pass')
+        # Create a dummy poster instance just for parsing (no bookmark
+        # lookups in test mode - the dummy site URL is not real)
+        poster = WordPressPost('https://example.com', 'user', 'pass',
+                               callout_config=load_config().get('callouts'),
+                               resolve_bookmarks=False)
 
         # Resolve format: CLI > frontmatter > config > default
         config = load_config()
@@ -2121,7 +2343,8 @@ def main():
     poster = WordPressPost(
         config['site_url'],
         config['username'],
-        config['app_password']
+        config['app_password'],
+        callout_config=config.get('callouts')
     )
 
     # Resolve format: CLI > frontmatter > config > default

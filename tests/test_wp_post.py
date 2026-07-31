@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
 import pytest
+import requests
 import yaml
 
 wp_post = sys.modules["wp_post"]
@@ -2675,3 +2676,246 @@ class TestMainPurgeDispatch:
             wp_post.main()
         assert exc.value.code == 1
         assert "only valid with --purge" in capsys.readouterr().err
+
+
+class TestBookmarkResolution:
+    def _post_payload(self, **overrides):
+        payload = {
+            "title": {"rendered": "My Other Post"},
+            "link": "https://example.com/my-other-post/",
+            "excerpt": {"rendered": "<p>A short excerpt. [&hellip;]</p>"},
+        }
+        payload.update(overrides)
+        return payload
+
+    @patch('wp_post.requests.get')
+    def test_resolves_slug_from_path(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        data = wp._resolve_bookmark("/my-other-post/")
+        assert data["title"] == "My Other Post"
+        assert data["link"] == "https://example.com/my-other-post/"
+        assert mock_get.call_args.kwargs["params"]["slug"] == "my-other-post"
+
+    @patch('wp_post.requests.get')
+    def test_resolves_slug_from_full_url(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        wp._resolve_bookmark("https://example.com/my-other-post/")
+        assert mock_get.call_args.kwargs["params"]["slug"] == "my-other-post"
+
+    @patch('wp_post.requests.get')
+    def test_excerpt_is_stripped_of_html_and_more_marker(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["excerpt"] == "A short excerpt."
+
+    @patch('wp_post.requests.get')
+    def test_featured_image_is_read_from_embed(self, mock_get, wp, mock_response):
+        payload = self._post_payload(
+            featured_media=123,
+            _embedded={"wp:featuredmedia": [{"id": 123, "source_url": "https://example.com/t.jpg"}]},
+        )
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["image_url"] == "https://example.com/t.jpg"
+        assert data["image_id"] == 123
+
+    @patch('wp_post.requests.get')
+    def test_falls_back_to_pages_when_no_post_matches(self, mock_get, wp, mock_response):
+        mock_get.side_effect = [
+            mock_response(200, []),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert "/pages" in mock_get.call_args_list[1].args[0]
+
+    @patch('wp_post.requests.get')
+    def test_returns_none_when_nothing_matches(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [])
+        assert wp._resolve_bookmark("nope") is None
+
+    @patch('wp_post.requests.get')
+    def test_result_is_cached_per_instance(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, [self._post_payload()])
+        wp._resolve_bookmark("my-other-post")
+        wp._resolve_bookmark("my-other-post")
+        assert mock_get.call_count == 1
+
+    @patch('wp_post.requests.get')
+    def test_network_error_returns_none(self, mock_get, wp):
+        mock_get.side_effect = requests.RequestException("down")
+        assert wp._resolve_bookmark("my-other-post") is None
+
+    @patch('wp_post.requests.get')
+    def test_dict_body_falls_back_to_pages_and_warns(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, {"code": "rest_no_route"}),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert "my-other-post" in capsys.readouterr().err
+
+    @patch('wp_post.requests.get')
+    def test_string_body_falls_back_to_pages_and_warns(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, "not a list"),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_list_of_non_dict_falls_back_to_pages_and_warns(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, [None]),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert mock_get.call_count == 2
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_empty_list_falls_back_to_pages_without_warning(self, mock_get, wp, mock_response, capsys):
+        mock_get.side_effect = [
+            mock_response(200, []),
+            mock_response(200, [self._post_payload()]),
+        ]
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert capsys.readouterr().err == ""
+
+    @patch('wp_post.requests.get')
+    def test_malformed_body_on_both_endpoints_returns_none_without_raising(self, mock_get, wp, mock_response, capsys):
+        mock_get.return_value = mock_response(200, {"code": "rest_no_route"})
+        assert wp._resolve_bookmark("my-other-post") is None
+        assert mock_get.call_count == 2
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_malformed_result_is_still_cached(self, mock_get, wp, mock_response):
+        mock_get.return_value = mock_response(200, {"code": "rest_no_route"})
+        wp._resolve_bookmark("my-other-post")
+        wp._resolve_bookmark("my-other-post")
+        assert mock_get.call_count == 2
+
+    @patch('wp_post.requests.get')
+    def test_title_wrong_type_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(title="Just a string")
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["title"] == ""
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_excerpt_none_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(excerpt=None)
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["excerpt"] == ""
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_embedded_list_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(_embedded=["not", "a", "dict"])
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["image_url"] is None
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_featuredmedia_dict_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(
+            _embedded={"wp:featuredmedia": {"id": 1, "source_url": "https://example.com/t.jpg"}}
+        )
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["image_url"] is None
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_missing_excerpt_and_embedded_still_produces_a_usable_card(self, mock_get, wp, mock_response, capsys):
+        payload = {
+            "title": {"rendered": "My Other Post"},
+            "link": "https://example.com/my-other-post/",
+        }
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert data["excerpt"] == ""
+        assert data["image_url"] is None
+        assert data["image_id"] is None
+        assert capsys.readouterr().err == ""
+
+
+class TestCalloutWiring:
+    def test_resolver_is_passed_to_the_converter(self, wp, md_file):
+        path = md_file({"title": "T"}, "> [!BOOKMARK]\n> /x/")
+        with patch.object(wp, '_resolve_bookmark', return_value=None) as resolver:
+            wp.parse_markdown_file(path)
+        resolver.assert_called_once_with("/x/")
+
+    def test_resolution_disabled_makes_no_lookup(self, md_file):
+        offline = wp_post.WordPressPost(
+            "https://example.com", "u", "p", resolve_bookmarks=False
+        )
+        path = md_file({"title": "T"}, "> [!BOOKMARK]\n> /x/")
+        with patch.object(offline, '_resolve_bookmark') as resolver:
+            _, content = offline.parse_markdown_file(path)
+        resolver.assert_not_called()
+        assert '<a href="/x/">' in content
+
+    def test_callout_config_reaches_the_converter(self, md_file):
+        poster = wp_post.WordPressPost(
+            "https://example.com", "u", "p",
+            callout_config={"types": {"note": {"label": "Hinweis"}}},
+        )
+        path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
+        _, content = poster.parse_markdown_file(path)
+        assert "Hinweis</strong>" in content
+
+
+class TestSvgStrippingDetection:
+    def test_warns_when_svg_missing_from_response(self, wp, capsys):
+        sent = '<p><svg viewBox="0 0 16 16"></svg>Note</p>'
+        post = {"content": {"rendered": "<p>Note</p>"}}
+        assert wp._warn_if_svg_stripped(sent, post) is True
+        assert "unfiltered_html" in capsys.readouterr().err
+
+    def test_quiet_when_svg_survives(self, wp, capsys):
+        sent = '<p><svg viewBox="0 0 16 16"></svg>Note</p>'
+        post = {"content": {"rendered": '<p><svg viewBox="0 0 16 16"></svg>Note</p>'}}
+        assert wp._warn_if_svg_stripped(sent, post) is False
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_when_nothing_was_sent_with_svg(self, wp, capsys):
+        post = {"content": {"rendered": "<p>Note</p>"}}
+        assert wp._warn_if_svg_stripped("<p>Note</p>", post) is False
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_when_rendered_content_is_absent(self, wp, capsys):
+        sent = '<p><svg></svg>Note</p>'
+        assert wp._warn_if_svg_stripped(sent, {}) is False
+        assert wp._warn_if_svg_stripped(sent, {"content": {"rendered": ""}}) is False
+        assert capsys.readouterr().err == ""

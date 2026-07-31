@@ -21,6 +21,7 @@ sudo install -d -m 755 "$INSTALL_DIR"
 sudo install -m 755 "$SRC_DIR/wp-post"      "$INSTALL_DIR/wp-post"
 sudo install -m 644 "$SRC_DIR/wp-post.py"   "$INSTALL_DIR/wp-post.py"
 sudo install -m 644 "$SRC_DIR/gutenberg.py" "$INSTALL_DIR/gutenberg.py"
+sudo install -m 644 "$SRC_DIR/callouts.py"  "$INSTALL_DIR/callouts.py"
 
 # Create symlink for system-wide access
 echo "Creating system-wide command..."

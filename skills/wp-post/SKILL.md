@@ -26,7 +26,7 @@ Post files with YAML frontmatter to WordPress via REST API.
 ### 1. Determine create vs update
 
 - If the file already has `id:` in frontmatter → this is an **update**. Proceed to step 3.
-- If no `id:` → this is a **new post**. `id` and `slug` are written back automatically after creation (step 5).
+- If no `id:` → this is a **new post**. `id` and `slug` are written back automatically after creation (step 7).
 
 ### 2. Author the file
 
@@ -97,7 +97,95 @@ More markdown.
   is not created.
 - Gutenberg markup inside fenced code blocks is left as code, not extracted.
 
-### 6. Automatic id/slug writeback (new posts only)
+### 6. Callouts (markdown mode)
+
+Eight callout types are written as GFM blockquotes and render as core
+Gutenberg blocks coloured from the theme's palette:
+
+```markdown
+> [!NOTE]
+> Supporting detail worth setting apart.
+
+> [!SUMMARY]
+> - First key point
+> - Second key point
+
+> [!FAQ]
+> **How long does setup take?**
+> About ten minutes.
+>
+> **Is there a free tier?**
+> Yes, up to 100 posts.
+
+> [!BOOKMARK]
+> /my-other-post/
+```
+
+| Type                                             | Renders as                                                                                          |
+|---------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` | A `wp:group` with a coloured left border, icon, and label                                           |
+| `SUMMARY`                                        | The same group; write a markdown list for key points                                                |
+| `FAQ`                                            | One `wp:details` accordion per `**question**` line                                                  |
+| `BOOKMARK`                                       | A card resolved from the target post (`wp:media-text` with a featured image, else a bordered group) |
+
+Type names are case-insensitive. A blockquote that does not start with a
+recognised `[!TYPE]` marker stays an ordinary `wp:quote`.
+
+`[!FAQ]` starts a new question only on a line that is entirely bold text
+(`**...**`) and that is either the first line of the body or is preceded
+by a blank line. A bold line stuck directly under the previous line, with
+no blank line above it, stays part of that answer instead of starting a
+new question - leave a blank line before every `**question**`, or the FAQ
+silently merges into one answer.
+
+`[!BOOKMARK]` accepts a slug, a `/path/`, or a full URL, and looks the
+target up through the REST API to build the card. Under `--test`, or when
+the target cannot be found, it degrades to a plain link card.
+
+Backgrounds always come from the theme palette (`tertiary` by default), so
+callouts pick up the site's own tint. The accent - the left border, the
+icon, and the label - depends on the type:
+
+| Types                                            | Accent                       |
+|--------------------------------------------------|------------------------------|
+| `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` | GitHub's conventional hues   |
+| `SUMMARY`, `FAQ`, `BOOKMARK`                     | theme `primary-alt-accent`   |
+
+The five GFM admonitions carry hues because readers already associate them
+with meanings - amber warns, red stops. A theme palette cannot express
+that, since its slots are named by role (`primary`, `secondary`) rather
+than by hue, so every type would look identical and only the icon would
+tell them apart. The three types with no cross-site convention stay on a
+theme slug so a site's own brand still shows through, in a tone that
+separates them from the hue-coded five without competing with them.
+
+Defaults: note `#0969da`, tip `#1a7f37`, important `#8250df`, warning
+`#9a6700`, caution `#d1242f`.
+
+Override per project in `.wp-poster.json`:
+
+```json
+"callouts": {
+  "background": "tertiary",
+  "padding": "1.25rem",
+  "types": {
+    "note":    {"label": "Note",    "color": "#0969da"},
+    "caution": {"label": "Caution", "color": "primary"}
+  }
+}
+```
+
+- `label` - text shown after the icon. Use this to localise callouts.
+- `color` - a hex literal like `#cf2e2e`, or a palette slug like `primary`
+  to tie a type to the site's brand instead of the convention.
+- `icon` - inline HTML replacing the built-in SVG. Set `""` to remove it.
+
+Icons are inline `<svg>`, which WordPress strips from post content unless
+the publishing user has the `unfiltered_html` capability. wp-post detects
+this after publishing and warns; grant the capability, or set `icon` to
+`""` or an emoji.
+
+### 7. Automatic id/slug writeback (new posts only)
 
 When `wp-post` creates a new post (no `id:` in frontmatter), it automatically writes the returned `id` and resolved `slug` back into the file's frontmatter. This prevents duplicate posts on re-run.
 
@@ -105,7 +193,7 @@ No manual action is required. After a successful create, the file is updated in-
 
 If WordPress resolved a slug conflict (e.g. `my-post` → `my-post-2`), the `slug` field is updated to match.
 
-### 7. Translation linking (MSLS multisite)
+### 8. Translation linking (MSLS multisite)
 
 For WordPress multisite networks with MSLS, wp-post can automatically link
 translation siblings.
@@ -139,7 +227,7 @@ where each site entry carries `content_path`, `site_url`, `locale`, and
 `blog_id`. No per-site config files are needed (older per-site
 `.wp-poster.json` files are still honored as a fallback).
 
-### 8. Clearing the cache
+### 9. Clearing the cache
 
 After publishing, the SpinupWP plugin purges the page cache on its own, so no
 action is normally needed. Use `wp-post --purge` when a change bypassed that:
