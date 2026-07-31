@@ -2894,3 +2894,28 @@ class TestCalloutWiring:
         path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
         _, content = poster.parse_markdown_file(path)
         assert "Hinweis</strong>" in content
+
+
+class TestSvgStrippingDetection:
+    def test_warns_when_svg_missing_from_response(self, wp, capsys):
+        sent = '<p><svg viewBox="0 0 16 16"></svg>Note</p>'
+        post = {"content": {"rendered": "<p>Note</p>"}}
+        assert wp._warn_if_svg_stripped(sent, post) is True
+        assert "unfiltered_html" in capsys.readouterr().err
+
+    def test_quiet_when_svg_survives(self, wp, capsys):
+        sent = '<p><svg viewBox="0 0 16 16"></svg>Note</p>'
+        post = {"content": {"rendered": '<p><svg viewBox="0 0 16 16"></svg>Note</p>'}}
+        assert wp._warn_if_svg_stripped(sent, post) is False
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_when_nothing_was_sent_with_svg(self, wp, capsys):
+        post = {"content": {"rendered": "<p>Note</p>"}}
+        assert wp._warn_if_svg_stripped("<p>Note</p>", post) is False
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_when_rendered_content_is_absent(self, wp, capsys):
+        sent = '<p><svg></svg>Note</p>'
+        assert wp._warn_if_svg_stripped(sent, {}) is False
+        assert wp._warn_if_svg_stripped(sent, {"content": {"rendered": ""}}) is False
+        assert capsys.readouterr().err == ""

@@ -192,6 +192,27 @@ class WordPressPost:
         self._bookmark_cache[slug] = result
         return result
 
+    def _warn_if_svg_stripped(self, sent_content, post):
+        """Warn once if WordPress dropped the callout icons on save.
+
+        kses strips <svg> for any user without unfiltered_html, which on
+        multisite means anyone who is not a super admin. An absent or
+        empty rendered field is not evidence of stripping, so stay quiet.
+        """
+        if '<svg' not in (sent_content or ''):
+            return False
+        rendered = (post.get('content') or {}).get('rendered') or ''
+        if not rendered or '<svg' in rendered:
+            return False
+        print(
+            "⚠ Callout icons were stripped by WordPress. The publishing user "
+            "lacks the unfiltered_html capability, which removes <svg> from "
+            "post content on save. Grant unfiltered_html to this user to keep "
+            "the icons.",
+            file=sys.stderr,
+        )
+        return True
+
     @staticmethod
     def _bookmark_slug(target):
         """Reduce a slug, /path/, or full URL to its final path segment."""
@@ -704,6 +725,7 @@ class WordPressPost:
         if response.status_code in [200, 201]:
             post = response.json()
             post_id = post['id']
+            self._warn_if_svg_stripped(post_data.get('content', ''), post)
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))
