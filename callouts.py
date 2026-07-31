@@ -504,9 +504,14 @@ def _bookmark_body(data, cfg):
     return "".join(parts)
 
 
-def callout_plugin(config=None, bookmark_resolver=None, warn=None):
-    """Build a mistune plugin rendering callouts with this configuration."""
-    cfg = merge_config(config, warn=warn)
+def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
+    """Build a mistune plugin rendering callouts with this configuration.
+
+    `locale` is the destination site's WordPress locale; labels are
+    resolved from it once, here, so an unknown language warns once per
+    conversion rather than once per callout.
+    """
+    cfg = merge_config(config, warn=warn, locale=locale)
     _warn = warn or _default_warn
 
     def parse(block, m, state):

@@ -831,3 +831,27 @@ class TestMergeConfigLocale:
     def test_defaults_carry_no_label(self):
         # _LABELS is the single source of truth for label text.
         assert "label" not in callouts.DEFAULT_CONFIG["types"]["note"]
+
+
+class TestLocaleReachesRendering:
+    def test_locale_selects_the_label(self):
+        result = convert("> [!NOTE]\n> A note.", locale="de_DE")
+        assert "Hinweis</strong>" in result
+        assert "Note</strong>" not in result
+
+    def test_locale_reaches_the_faq_label(self):
+        # The assertion must be the generated label, not the authored
+        # question - "Frage?" is body text and would pass with an English
+        # label sitting right above it.
+        md = "> [!FAQ]\n> **Frage?**\n> Antwort."
+        result = convert(md, locale="de_DE")
+        assert "Häufige Fragen</strong>" in result
+        assert "Frequently asked questions" not in result
+
+    def test_locale_reaches_the_unresolved_bookmark_anchor(self):
+        result = convert("> [!BOOKMARK]\n> /ein-artikel/", locale="de_DE")
+        assert ">Weiterlesen</a>" in result
+
+    def test_no_locale_still_renders_english(self):
+        result = convert("> [!WARNING]\n> Careful.")
+        assert "Warning</strong>" in result
