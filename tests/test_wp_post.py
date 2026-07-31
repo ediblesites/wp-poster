@@ -21,6 +21,7 @@ write_msls_links = wp_post.write_msls_links
 init_network_config = wp_post.init_network_config
 resolve_site_identity = wp_post.resolve_site_identity
 find_site_for_file = wp_post.find_site_for_file
+resolve_locale_for_file = wp_post.resolve_locale_for_file
 normalize_yaml_dates = wp_post.normalize_yaml_dates
 
 
@@ -2893,11 +2894,11 @@ class TestCalloutWiring:
     def test_callout_config_reaches_the_converter(self, md_file):
         poster = wp_post.WordPressPost(
             "https://example.com", "u", "p",
-            callout_config={"types": {"note": {"label": "Hinweis"}}},
+            callout_config={"types": {"note": {"color": "primary"}}},
         )
         path = md_file({"title": "T"}, "> [!NOTE]\n> Body.")
         _, content = poster.parse_markdown_file(path)
-        assert "Hinweis</strong>" in content
+        assert "var:preset|color|primary" in content
 
 
 class TestSvgStrippingDetection:
@@ -3059,3 +3060,112 @@ class TestBookmarkSlugCaseFolding:
         assert data["title"] == "My Post"
         assert mock_get.call_args.kwargs["params"]["slug"] == "my-post"
         assert mock_get.call_count == 1
+
+
+class TestResolveLocaleForFile:
+    def _network_project(self, tmp_path):
+        (tmp_path / "content" / "de").mkdir(parents=True)
+        (tmp_path / "content" / "en").mkdir(parents=True)
+        (tmp_path / ".wp-poster.json").write_text(json.dumps({
+            "network": {"sites": {
+                "en": {"content_path": "content/en", "site_url": "https://e.com",
+                       "locale": "en_US", "blog_id": 1},
+                "de": {"content_path": "content/de", "site_url": "https://e.com/de",
+                       "locale": "de_DE", "blog_id": 3},
+            }}
+        }))
+        return tmp_path
+
+    def test_file_under_a_site_takes_that_sites_locale(self, tmp_path):
+        root = self._network_project(tmp_path)
+        article = root / "content" / "de" / "artikel.md"
+        article.write_text("# Titel\n")
+        assert resolve_locale_for_file(str(article)) == "de_DE"
+
+    def test_sibling_site_takes_its_own_locale(self, tmp_path):
+        root = self._network_project(tmp_path)
+        article = root / "content" / "en" / "article.md"
+        article.write_text("# Title\n")
+        assert resolve_locale_for_file(str(article)) == "en_US"
+
+    def test_file_outside_every_content_path_is_none(self, tmp_path):
+        root = self._network_project(tmp_path)
+        stray = root / "notes.md"
+        stray.write_text("# Notes\n")
+        assert resolve_locale_for_file(str(stray)) is None
+
+    def test_project_without_a_network_config_is_none(self, tmp_path):
+        article = tmp_path / "post.md"
+        article.write_text("# Title\n")
+        assert resolve_locale_for_file(str(article)) is None
+
+    def test_malformed_discovery_data_warns_and_falls_back(self, tmp_path, capsys):
+        # Locale discovery runs unconditionally and under --test, so it must
+        # degrade to English rather than abort a publish that used to work.
+        # find_network_config json.loads without a guard; find_site_for_file
+        # indexes site_info['content_path'] directly.
+        (tmp_path / "content").mkdir()
+        (tmp_path / ".wp-poster.json").write_text('{"network": {')
+        article = tmp_path / "content" / "post.md"
+        article.write_text("# Title\n")
+        assert resolve_locale_for_file(str(article)) is None
+        assert "site language" in capsys.readouterr().err
+
+
+class TestPosterCarriesLocale:
+    def test_locale_defaults_to_none(self):
+        poster = WordPressPost("https://e.com", "u", "p")
+        assert poster._locale is None
+
+    def test_german_locale_produces_german_callout_labels(self, tmp_path):
+        article = tmp_path / "artikel.md"
+        article.write_text("---\ntitle: Titel\n---\n\n> [!WARNING]\n> Vorsicht.\n")
+        poster = WordPressPost("https://e.com", "u", "p",
+                               resolve_bookmarks=False, locale="de_DE")
+        _, blocks = poster.parse_markdown_file(str(article))
+        assert "Warnung</strong>" in blocks
+
+    def test_no_locale_produces_english_callout_labels(self, tmp_path):
+        article = tmp_path / "post.md"
+        article.write_text("---\ntitle: Title\n---\n\n> [!WARNING]\n> Careful.\n")
+        poster = WordPressPost("https://e.com", "u", "p", resolve_bookmarks=False)
+        _, blocks = poster.parse_markdown_file(str(article))
+        assert "Warning</strong>" in blocks
+
+
+class TestTestModeLocale:
+    def _german_project(self, tmp_path):
+        (tmp_path / "content" / "de").mkdir(parents=True)
+        (tmp_path / ".wp-poster.json").write_text(json.dumps({
+            "network": {"sites": {
+                "de": {"content_path": "content/de", "site_url": "https://e.com/de",
+                       "locale": "de_DE", "blog_id": 3},
+            }}
+        }))
+        article = tmp_path / "content" / "de" / "artikel.md"
+        article.write_text("---\ntitle: Titel\n---\n\n> [!WARNING]\n> Vorsicht.\n")
+        return article
+
+    def test_test_mode_previews_the_sites_language(self, tmp_path, capsys):
+        # Drives main() end to end: this is the only test that proves the
+        # CLI wires the locale in. Constructing a WordPressPost by hand
+        # here would pass even with the wiring deleted.
+        article = self._german_project(tmp_path)
+        argv = ["wp-post", str(article), "--test", "--markdown"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "Warnung</strong>" in out
+        assert "Warning</strong>" not in out
+
+    def test_test_mode_outside_a_network_project_previews_english(self, tmp_path, capsys):
+        article = tmp_path / "post.md"
+        article.write_text("---\ntitle: Title\n---\n\n> [!WARNING]\n> Careful.\n")
+        argv = ["wp-post", str(article), "--test", "--markdown"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 0
+        assert "Warning</strong>" in capsys.readouterr().out

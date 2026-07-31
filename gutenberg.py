@@ -314,7 +314,8 @@ def _gutenberg_table_cell(renderer, text, align=None, head=False):
 class GutenbergConverter:
     """Converts markdown to WordPress Gutenberg blocks."""
 
-    def __init__(self, image_handler=None, callout_config=None, bookmark_resolver=None):
+    def __init__(self, image_handler=None, callout_config=None,
+                 bookmark_resolver=None, locale=None):
         """
         Initialize converter.
 
@@ -325,6 +326,8 @@ class GutenbergConverter:
             bookmark_resolver: Optional callable(target) -> dict | None used by
                           [!BOOKMARK] callouts. If None, bookmarks degrade to
                           a plain link card without a network request.
+            locale: Optional WordPress locale ("de_DE", "ja") selecting the
+                          callout label language. None means English.
         """
         self._renderer = GutenbergRenderer(image_handler=image_handler)
 
@@ -334,7 +337,7 @@ class GutenbergConverter:
                 table,
                 footnotes,
                 strikethrough,
-                callout_plugin(callout_config, bookmark_resolver),
+                callout_plugin(callout_config, bookmark_resolver, locale=locale),
             ],
         )
 

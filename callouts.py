@@ -119,22 +119,85 @@ DEFAULT_CONFIG = {
     "background": "tertiary",
     "padding": "1.25rem",
     "types": {
-        "note": {"label": "Note", "color": "#0969da", "icon": None},
-        "tip": {"label": "Tip", "color": "#1a7f37", "icon": None},
-        "important": {"label": "Important", "color": "#8250df", "icon": None},
-        "warning": {"label": "Warning", "color": "#9a6700", "icon": None},
-        "caution": {"label": "Caution", "color": "#d1242f", "icon": None},
-        "summary": {"label": "In short", "color": "primary-alt-accent", "icon": None},
-        "faq": {
-            "label": "Frequently asked questions",
-            "color": "primary-alt-accent",
-            "icon": None,
-        },
-        "bookmark": {
-            "label": "Read next",
-            "color": "primary-alt-accent",
-            "icon": None,
-        },
+        "note": {"color": "#0969da", "icon": None},
+        "tip": {"color": "#1a7f37", "icon": None},
+        "important": {"color": "#8250df", "icon": None},
+        "warning": {"color": "#9a6700", "icon": None},
+        "caution": {"color": "#d1242f", "icon": None},
+        "summary": {"color": "primary-alt-accent", "icon": None},
+        "faq": {"color": "primary-alt-accent", "icon": None},
+        "bookmark": {"color": "primary-alt-accent", "icon": None},
+    },
+}
+
+
+# Labels are the only English wp-poster puts on the page itself - FAQ
+# questions are authored in the post and bookmark cards come from
+# WordPress, so both are already in the right language. Eleven languages
+# ship: the six payperfax publishes, plus five ahead of need.
+#
+# `bookmark` is a slot label, not a phrase to translate. The slot means
+# "one related post the author picked", and each language uses its own
+# blog-native label for it. A literal "Read next" everywhere (次に読む,
+# Als Nächstes lesen) would be accurate and read as machine output.
+_LABELS = {
+    "en": {
+        "note": "Note", "tip": "Tip", "important": "Important",
+        "warning": "Warning", "caution": "Caution", "summary": "In short",
+        "faq": "Frequently asked questions", "bookmark": "Read next",
+    },
+    "de": {
+        "note": "Hinweis", "tip": "Tipp", "important": "Wichtig",
+        "warning": "Warnung", "caution": "Vorsicht", "summary": "Kurz gesagt",
+        "faq": "Häufige Fragen", "bookmark": "Weiterlesen",
+    },
+    "es": {
+        "note": "Nota", "tip": "Consejo", "important": "Importante",
+        "warning": "Advertencia", "caution": "Precaución",
+        "summary": "En resumen", "faq": "Preguntas frecuentes",
+        "bookmark": "Sigue leyendo",
+    },
+    "fr": {
+        "note": "Note", "tip": "Astuce", "important": "Important",
+        "warning": "Avertissement", "caution": "Attention",
+        "summary": "En bref", "faq": "Questions fréquentes",
+        "bookmark": "À lire ensuite",
+    },
+    "it": {
+        "note": "Nota", "tip": "Suggerimento", "important": "Importante",
+        "warning": "Avvertenza", "caution": "Attenzione",
+        "summary": "In breve", "faq": "Domande frequenti",
+        "bookmark": "Leggi anche",
+    },
+    "ja": {
+        "note": "注記", "tip": "ヒント", "important": "重要",
+        "warning": "警告", "caution": "注意", "summary": "要点",
+        "faq": "よくある質問", "bookmark": "あわせて読みたい",
+    },
+    "ko": {
+        "note": "참고", "tip": "팁", "important": "중요",
+        "warning": "경고", "caution": "주의", "summary": "요약",
+        "faq": "자주 묻는 질문", "bookmark": "이어서 읽기",
+    },
+    "zh": {
+        "note": "备注", "tip": "提示", "important": "重要",
+        "warning": "警告", "caution": "注意", "summary": "摘要",
+        "faq": "常见问题", "bookmark": "延伸阅读",
+    },
+    "th": {
+        "note": "หมายเหตุ", "tip": "เคล็ดลับ", "important": "สำคัญ",
+        "warning": "คำเตือน", "caution": "ข้อควรระวัง", "summary": "สรุป",
+        "faq": "คำถามที่พบบ่อย", "bookmark": "อ่านต่อ",
+    },
+    "ar": {
+        "note": "ملاحظة", "tip": "نصيحة", "important": "مهم",
+        "warning": "تحذير", "caution": "تنبيه", "summary": "باختصار",
+        "faq": "الأسئلة الشائعة", "bookmark": "اقرأ أيضًا",
+    },
+    "he": {
+        "note": "הערה", "tip": "טיפ", "important": "חשוב",
+        "warning": "אזהרה", "caution": "זהירות", "summary": "בקצרה",
+        "faq": "שאלות נפוצות", "bookmark": "להמשך קריאה",
     },
 }
 
@@ -144,6 +207,31 @@ def _default_warn(message):
     print(f"⚠ {message}", file=sys.stderr)
 
 
+def resolve_lang(locale, warn=None):
+    """Table key for a WordPress locale. Always returns a key in _LABELS.
+
+    Tries the full locale before its language prefix, so a `zh_tw` table
+    can be added later without touching this function. A locale whose
+    language has no entry warns and takes English; a missing or malformed
+    locale takes English silently, because that is the documented default
+    rather than a failure.
+    """
+    if not isinstance(locale, str):
+        return "en"
+    normalised = locale.strip().lower()
+    if normalised in _LABELS:
+        return normalised
+    prefix = normalised.split("_")[0]
+    if not prefix:
+        return "en"
+    if prefix in _LABELS:
+        return prefix
+    (warn or _default_warn)(
+        f"no callout labels for language '{prefix}'; using English"
+    )
+    return "en"
+
+
 def _clean_str(value, fallback):
     """A non-empty string, or the fallback. Guards hand-edited config."""
     if isinstance(value, str) and value.strip():
@@ -151,19 +239,28 @@ def _clean_str(value, fallback):
     return fallback
 
 
-def merge_config(user_config=None, warn=None):
-    """User config merged over the built-in defaults.
+def merge_config(user_config=None, warn=None, locale=None):
+    """User config merged over the built-in defaults, for one language.
 
     Every field is optional; a partial override touches only what it
     names. Config arrives from hand-edited JSON, so every value may be
     the wrong type - this function never raises, it warns and falls
     back, because a bad config must not fail a publish.
+
+    Labels are not configurable. They come from `_LABELS`, keyed by the
+    destination site's locale, because a network project publishes every
+    language from one root config and has nowhere to write a per-language
+    label.
     """
     warn = warn or _default_warn
+    labels = _LABELS[resolve_lang(locale, warn)]
     merged = {
         "background": DEFAULT_CONFIG["background"],
         "padding": DEFAULT_CONFIG["padding"],
-        "types": {name: dict(spec) for name, spec in DEFAULT_CONFIG["types"].items()},
+        "types": {
+            name: dict(spec, label=labels[name])
+            for name, spec in DEFAULT_CONFIG["types"].items()
+        },
     }
     if not user_config:
         return merged
@@ -194,7 +291,11 @@ def merge_config(user_config=None, warn=None):
             continue
 
         target = merged["types"][key]
-        target["label"] = _clean_str(overrides.get("label"), target["label"])
+        if "label" in overrides:
+            warn(
+                f"callouts.types.{name}.label is no longer configurable; "
+                "labels come from the site's locale"
+            )
         target["color"] = _clean_str(overrides.get("color"), target["color"])
         if "icon" in overrides:
             # "" is meaningful (disables the icon), so _clean_str is wrong
@@ -403,9 +504,14 @@ def _bookmark_body(data, cfg):
     return "".join(parts)
 
 
-def callout_plugin(config=None, bookmark_resolver=None, warn=None):
-    """Build a mistune plugin rendering callouts with this configuration."""
-    cfg = merge_config(config, warn=warn)
+def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
+    """Build a mistune plugin rendering callouts with this configuration.
+
+    `locale` is the destination site's WordPress locale; labels are
+    resolved from it once, here, so an unknown language warns once per
+    conversion rather than once per callout.
+    """
+    cfg = merge_config(config, warn=warn, locale=locale)
     _warn = warn or _default_warn
 
     def parse(block, m, state):

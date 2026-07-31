@@ -35,13 +35,13 @@ class TestMergeConfig:
         assert set(merged["types"]) == set(callouts.CALLOUT_TYPES)
 
     def test_partial_override_leaves_other_fields(self):
-        merged = callouts.merge_config({"types": {"note": {"label": "Hinweis"}}})
-        assert merged["types"]["note"]["label"] == "Hinweis"
-        assert merged["types"]["note"]["color"] == callouts.DEFAULT_CONFIG["types"]["note"]["color"]
+        merged = callouts.merge_config({"types": {"note": {"color": "primary"}}})
+        assert merged["types"]["note"]["color"] == "primary"
+        assert merged["types"]["note"]["icon"] == callouts.DEFAULT_CONFIG["types"]["note"]["icon"]
 
     def test_partial_override_leaves_other_types(self):
-        merged = callouts.merge_config({"types": {"note": {"label": "Hinweis"}}})
-        assert merged["types"]["tip"]["label"] == callouts.DEFAULT_CONFIG["types"]["tip"]["label"]
+        merged = callouts.merge_config({"types": {"note": {"color": "primary"}}})
+        assert merged["types"]["tip"]["color"] == callouts.DEFAULT_CONFIG["types"]["tip"]["color"]
 
     def test_background_override(self):
         merged = callouts.merge_config({"background": "#eeeeee"})
@@ -50,20 +50,20 @@ class TestMergeConfig:
     def test_unknown_type_warns_and_is_ignored(self):
         warnings = []
         merged = callouts.merge_config(
-            {"types": {"sidebar": {"label": "Sidebar"}}}, warn=warnings.append
+            {"types": {"sidebar": {"color": "primary"}}}, warn=warnings.append
         )
         assert "sidebar" not in merged["types"]
         assert len(warnings) == 1
         assert "sidebar" in warnings[0]
 
     def test_type_name_matching_is_case_insensitive(self):
-        merged = callouts.merge_config({"types": {"NOTE": {"label": "Nota"}}})
-        assert merged["types"]["note"]["label"] == "Nota"
+        merged = callouts.merge_config({"types": {"NOTE": {"color": "primary"}}})
+        assert merged["types"]["note"]["color"] == "primary"
 
     def test_defaults_are_not_mutated_by_merge(self):
-        merged = callouts.merge_config({"types": {"note": {"label": "Changed"}}})
-        merged["types"]["note"]["label"] = "Changed again"
-        assert callouts.DEFAULT_CONFIG["types"]["note"]["label"] == "Note"
+        merged = callouts.merge_config({"types": {"note": {"color": "primary"}}})
+        merged["types"]["note"]["color"] = "secondary"
+        assert callouts.DEFAULT_CONFIG["types"]["note"]["color"] == "#0969da"
 
 
 class TestMalformedConfig:
@@ -230,11 +230,11 @@ class TestSimpleCallouts:
         assert "has-background" in result
         assert '"backgroundColor"' not in result
 
-    def test_label_override_is_used(self):
+    def test_label_config_no_longer_overrides(self):
         cfg = {"types": {"note": {"label": "Hinweis"}}}
         result = convert("> [!NOTE]\n> A note.", callout_config=cfg)
-        assert "Hinweis</strong>" in result
-        assert "Note</strong>" not in result
+        assert "Note</strong>" in result
+        assert "Hinweis" not in result
 
     def test_icon_is_svg_inheriting_current_color(self):
         result = convert("> [!TIP]\n> A tip.")
@@ -745,3 +745,113 @@ class TestBookmarkCardBuildingNet:
         )
         assert "wp:media-text" in result
         assert "could not be built" not in capsys.readouterr().err.lower()
+
+
+class TestResolveLang:
+    def test_locale_with_region_takes_the_language(self):
+        assert callouts.resolve_lang("de_DE") == "de"
+
+    def test_bare_language_locale(self):
+        assert callouts.resolve_lang("ja") == "ja"
+
+    def test_traditional_chinese_falls_back_to_the_language(self):
+        # No zh_tw entry ships, so zh_TW takes Simplified. The two-step
+        # lookup means adding one later needs no resolver change.
+        assert callouts.resolve_lang("zh_TW") == "zh"
+
+    def test_unknown_language_warns_and_uses_english(self):
+        warnings = []
+        assert callouts.resolve_lang("pt_BR", warn=warnings.append) == "en"
+        assert len(warnings) == 1
+        assert "'pt'" in warnings[0]
+
+    def test_no_locale_is_english_without_a_warning(self):
+        warnings = []
+        assert callouts.resolve_lang(None, warn=warnings.append) == "en"
+        assert callouts.resolve_lang("  ", warn=warnings.append) == "en"
+        assert warnings == []
+
+    def test_non_string_locale_is_english_without_raising(self):
+        assert callouts.resolve_lang(42) == "en"
+
+
+class TestLabelTable:
+    def test_every_language_covers_every_type(self):
+        for lang, labels in callouts._LABELS.items():
+            assert set(labels) == set(callouts.CALLOUT_TYPES), lang
+
+    def test_all_eleven_languages_ship(self):
+        assert set(callouts._LABELS) == {
+            "en", "de", "es", "fr", "it", "ja", "ko", "zh", "th", "ar", "he"
+        }
+
+    def test_spot_checks(self):
+        assert callouts._LABELS["en"]["bookmark"] == "Read next"
+        assert callouts._LABELS["de"]["warning"] == "Warnung"
+        # 注記, not メモ - payperfax's content is registry and filing
+        # procedure, which reads formal.
+        assert callouts._LABELS["ja"]["note"] == "注記"
+        # Avviso reads as "notice"; Avvertenza carries the warning sense.
+        assert callouts._LABELS["it"]["warning"] == "Avvertenza"
+
+
+class TestMergeConfigLocale:
+    def test_german_locale_yields_german_labels(self):
+        merged = callouts.merge_config(None, locale="de_DE")
+        assert merged["types"]["warning"]["label"] == "Warnung"
+        assert merged["types"]["bookmark"]["label"] == "Weiterlesen"
+
+    def test_no_locale_yields_english(self):
+        merged = callouts.merge_config(None)
+        assert merged["types"]["warning"]["label"] == "Warning"
+
+    def test_unknown_locale_yields_english_and_warns(self):
+        warnings = []
+        merged = callouts.merge_config(None, warn=warnings.append, locale="pt_BR")
+        assert merged["types"]["warning"]["label"] == "Warning"
+        assert len(warnings) == 1
+        assert "'pt'" in warnings[0]
+
+    def test_config_overrides_still_apply_under_a_locale(self):
+        merged = callouts.merge_config(
+            {"types": {"warning": {"color": "primary"}}}, locale="de_DE"
+        )
+        assert merged["types"]["warning"]["color"] == "primary"
+        assert merged["types"]["warning"]["label"] == "Warnung"
+
+    def test_label_key_in_config_warns_and_is_ignored(self):
+        warnings = []
+        merged = callouts.merge_config(
+            {"types": {"note": {"label": "Hinweis"}}}, warn=warnings.append
+        )
+        assert merged["types"]["note"]["label"] == "Note"
+        assert len(warnings) == 1
+        assert "label" in warnings[0]
+
+    def test_defaults_carry_no_label(self):
+        # _LABELS is the single source of truth for label text.
+        assert "label" not in callouts.DEFAULT_CONFIG["types"]["note"]
+
+
+class TestLocaleReachesRendering:
+    def test_locale_selects_the_label(self):
+        result = convert("> [!NOTE]\n> A note.", locale="de_DE")
+        assert "Hinweis</strong>" in result
+        assert "Note</strong>" not in result
+
+    def test_locale_reaches_the_faq_label(self):
+        # The assertion must be the generated label, not the authored
+        # question - "Frage?" is body text and would pass with an English
+        # label sitting right above it.
+        md = "> [!FAQ]\n> **Frage?**\n> Antwort."
+        result = convert(md, locale="de_DE")
+        assert "Häufige Fragen</strong>" in result
+        assert "Frequently asked questions" not in result
+
+    def test_locale_reaches_the_unresolved_bookmark_anchor(self):
+        result = convert("> [!BOOKMARK]\n> /ein-artikel/", locale="de_DE")
+        assert ">Weiterlesen</a>" in result
+
+    def test_no_locale_still_renders_english(self):
+        result = convert("> [!WARNING]\n> Careful.")
+        assert "Warning</strong>" in result

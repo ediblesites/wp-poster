@@ -190,16 +190,44 @@ Override per project in `.wp-poster.json`:
   "background": "tertiary",
   "padding": "1.25rem",
   "types": {
-    "note":    {"label": "Note",    "color": "#0969da"},
-    "caution": {"label": "Caution", "color": "primary"}
+    "caution": {"color": "primary"}
   }
 }
 ```
 
-- `label` - text shown after the icon. Use this to localise callouts.
 - `color` - a hex literal like `#cf2e2e`, or a palette slug like `primary`
   to tie a type to the site's brand instead of the convention.
 - `icon` - inline HTML replacing the built-in SVG. Set `""` to remove it.
+
+### Callout labels and language
+
+Labels are not configurable. They come from a table shipped with
+wp-poster, selected by the destination site's `locale` in the
+`network.sites` map:
+
+| lang | note | tip | important | warning | caution | summary | faq | bookmark |
+|------|------|-----|-----------|---------|---------|---------|-----|----------|
+| en | Note | Tip | Important | Warning | Caution | In short | Frequently asked questions | Read next |
+| de | Hinweis | Tipp | Wichtig | Warnung | Vorsicht | Kurz gesagt | Häufige Fragen | Weiterlesen |
+| es | Nota | Consejo | Importante | Advertencia | Precaución | En resumen | Preguntas frecuentes | Sigue leyendo |
+| fr | Note | Astuce | Important | Avertissement | Attention | En bref | Questions fréquentes | À lire ensuite |
+| it | Nota | Suggerimento | Importante | Avvertenza | Attenzione | In breve | Domande frequenti | Leggi anche |
+| ja | 注記 | ヒント | 重要 | 警告 | 注意 | 要点 | よくある質問 | あわせて読みたい |
+| ko | 참고 | 팁 | 중요 | 경고 | 주의 | 요약 | 자주 묻는 질문 | 이어서 읽기 |
+| zh | 备注 | 提示 | 重要 | 警告 | 注意 | 摘要 | 常见问题 | 延伸阅读 |
+| th | หมายเหตุ | เคล็ดลับ | สำคัญ | คำเตือน | ข้อควรระวัง | สรุป | คำถามที่พบบ่อย | อ่านต่อ |
+| ar | ملاحظة | نصيحة | مهم | تحذير | تنبيه | باختصار | الأسئلة الشائعة | اقرأ أيضًا |
+| he | הערה | טיפ | חשוב | אזהרה | זהירות | בקצרה | שאלות נפוצות | להמשך קריאה |
+
+A locale like `de_DE` takes its language prefix. A language with no entry
+falls back to English and warns. A project with no `network.sites` map has
+no locale and takes English silently.
+
+`--test` resolves the locale the same way, so a preview shows the labels a
+publish would emit.
+
+Arabic and Hebrew are right-to-left; the labels are correct but the icon
+gap and the accent bar still anchor to the left. Bidi is not yet handled.
 
 Icons are inline `<svg>`, which WordPress strips from post content unless
 the publishing user has the `unfiltered_html` capability. wp-post detects

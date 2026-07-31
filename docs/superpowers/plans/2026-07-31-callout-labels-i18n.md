@@ -1039,7 +1039,7 @@ After Task 6, confirm the whole feature end to end:
 
 - [ ] `python3 -m pytest -q` from the repo root - all passing, and more than the 389 baseline.
 - [ ] `git log --oneline master..` shows six commits, one per task.
-- [ ] `grep -rn '"label"' tests/` returns nothing - every label-override test was migrated, not left failing.
+- [ ] No test asserts that a configured label takes effect. `grep -rn '"label"' tests/` is too blunt to check this - it also matches legitimate reads of the resolved label and the tests that pass a label to prove it is rejected. Read the hits rather than expecting none.
 - [ ] `grep -rn '"label"' skills/wp-post/SKILL.md` returns nothing.
 - [ ] `TestResolveLocaleIsBestEffort` passes - malformed JSON, a site entry with no `content_path`, and a non-dict site entry each warn and fall back to English rather than aborting.
 - [ ] `TestTestModeLocale::test_test_mode_previews_the_sites_language` fails if the `locale=` argument is deleted from the `--test` branch. Check this by hand once: remove it, watch the test go red, put it back.
