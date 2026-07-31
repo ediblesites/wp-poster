@@ -361,26 +361,61 @@ The five existing admonitions currently emit `wp:quote` and will emit
 `wp:group`. Posts already published keep their stored markup until
 re-published.
 
-## To verify during implementation
+## Verified on publish
 
-Two things cannot be settled from outside the site and are resolved by the
-demo post rather than by assumption:
+Settled against the live demo post on 2026-07-31, not assumed. The post is
+`https://dashpadd.com/callouts-demo/` (id 2742) on dashpadd.com, running
+Ollie.
 
-1. Whether Gutenberg's `core/details` accepts an `<h3>` inside its summary
-   RichText without a validation warning. Fallback: a plain `<summary>`
-   styled to h3 size.
-2. Whether `core/group` serialises split (per-side) border colour as
-   assumed. Fallback: a full border in the accent colour, or a
-   `core/quote` wrapper, which Ollie already gives a left border.
-3. Whether the inline `<svg>` inside the label paragraph is itself
-   editor-valid, independently of whether kses keeps it.
+Two methods were used, and they answer different questions. Fetching the
+rendered page settles what WordPress stored and what kses kept. It cannot
+settle editor validity, because block validation is a client-side
+comparison the front end never performs. That required fetching
+`content.raw` with `context=edit` and parsing it with `@wordpress/blocks`
+plus `registerCoreBlocks()`, checking `isValid` on every block including
+inner blocks.
 
-Fetching the published page settles storage and kses, but not editor
-validity - block validation is a client-side comparison the front end
-never performs. Answering these requires parsing the stored content with
-`@wordpress/blocks` and checking `isValid`, or opening the post in
-wp-admin. Neither question may be marked settled on the strength of
-front-end HTML alone.
+| Question | Method | Result |
+|-----------------------------------------|-----------------|--------|
+| `<h3>` inside `core/details` `<summary>` | Block parse     | Valid, all 4 accordions |
+| Inline `<svg>` in `core/paragraph`       | Block parse     | Valid, all 6 label paragraphs |
+| `<svg>` survives kses                    | Rendered page   | Survives - 10 in the page, no strip warning |
+| Split border serialisation               | Rendered page   | `border-left-color`, `-width`, `-style` all present |
+| Bookmark resolution                      | Rendered page   | Resolved to a `media-text` card with featured image, correct alt, and a WordPress-generated `srcset` |
+| Whole-post editor validity               | Block parse     | 43 blocks, 0 invalid |
+
+No fallback was needed for either construct the design flagged as
+uncertain. Both are valid as specified.
+
+### What the first publish caught
+
+The initial publish parsed 43 blocks with **1 invalid**: the bookmark's
+`core/media-text`. The block comment declared `mediaWidth:30`, but the
+serialised HTML omitted the `style="grid-template-columns:30% auto"`
+wrapper attribute and the `size-full` image class that core's `save()`
+derives from that attribute, so Gutenberg's re-derivation did not match
+what was stored. The front end rendered correctly; only the editor was
+affected, showing "unexpected or invalid content" on that card.
+
+Fixed by deriving both the attribute and the style from one constant so
+they cannot drift, and by matching core's image classes. The expected
+markup was obtained from core itself - `getSaveContent(getBlockType(
+'core/media-text'), attrs)` - rather than inferred from reading its
+source. Re-published and re-parsed: 0 invalid.
+
+This is the case for running the block parser rather than trusting the
+rendered page. The defect was invisible in the front-end HTML.
+
+### Correction to an earlier assumption
+
+The design claimed a border with colour and width but no `style` would
+render nothing, since the CSS initial value of `border-style` is `none`.
+That is true of CSS in isolation but overstated for WordPress: core ships
+`html :where([style*=border-left-width]){border-left-style:solid}`, which
+would have supplied the style anyway. Declaring `"style":"solid"`
+explicitly is still the better choice - `:where()` carries zero
+specificity and any theme rule overrides it - but it is belt-and-braces,
+not a rescue.
 
 ## Demo
 
