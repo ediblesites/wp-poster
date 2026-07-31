@@ -165,7 +165,28 @@ class WordPressPost:
                     file=sys.stderr,
                 )
                 continue
-            result = self._bookmark_card_data(items[0])
+            # The item passed the shape gate above, but individual nested
+            # fields (title/excerpt/_embedded) can still be malformed in
+            # ways _bookmark_card_data tolerates by degrading that one
+            # field rather than the whole item - warn_field surfaces those
+            # so a misbehaving proxy/plugin is visible, without discarding
+            # an otherwise-usable card over one bad field. A totally
+            # unanticipated failure (a hostile dict subclass, etc.) is
+            # still caught below and treated the same as a malformed
+            # response: not a match for this rest_base, not a reason to
+            # skip pages or leave the slug uncached.
+            def warn_field(msg):
+                print(f"⚠ Bookmark lookup for {target} got a malformed {rest_base} response ({msg})", file=sys.stderr)
+
+            try:
+                result = self._bookmark_card_data(items[0], warn=warn_field)
+            except Exception as e:
+                print(
+                    f"⚠ Bookmark lookup for {target} could not parse the "
+                    f"{rest_base} response ({e}); skipping",
+                    file=sys.stderr,
+                )
+                continue
             break
 
         self._bookmark_cache[slug] = result
@@ -183,9 +204,56 @@ class WordPressPost:
         return segments[-1] if segments else None
 
     @staticmethod
-    def _bookmark_card_data(item):
+    def _bookmark_rendered_field(item, key, warn=None):
+        """Read a WP REST {'rendered': ...} field, tolerating a malformed shape.
+
+        `title` and `excerpt` are normally {'rendered': str, 'raw': str}
+        objects. A field that's simply absent (not requested, stripped by
+        a filter, a post type without an excerpt) is a normal partial
+        response and yields '' silently. A field that's *present* but not
+        that dict shape (a bare string, an explicit null, a list...) is a
+        sign something is genuinely off about the response, so it's
+        reported via `warn` before also falling back to ''.
+        """
+        if key not in item:
+            return ''
+        value = item[key]
+        if isinstance(value, dict):
+            return value.get('rendered', '') or ''
+        if warn:
+            warn(f"{key} is a {type(value).__name__}, not an object; treating as empty")
+        return ''
+
+    @staticmethod
+    def _bookmark_featured_media(item, warn=None):
+        """Extract the embedded featured-media list item, tolerating a malformed shape.
+
+        `_embedded` (and `_embedded['wp:featuredmedia']`) being absent is
+        the normal case when `_embed` wasn't honored or the post has no
+        featured image - silent, no image. Either being present but not
+        the expected object/list shape is warned about, then also treated
+        as "no image" rather than raising.
+        """
+        if '_embedded' not in item:
+            return []
+        embedded = item['_embedded']
+        if not isinstance(embedded, dict):
+            if warn:
+                warn(f"_embedded is a {type(embedded).__name__}, not an object; skipping featured image")
+            return []
+        if 'wp:featuredmedia' not in embedded:
+            return []
+        media = embedded['wp:featuredmedia']
+        if not isinstance(media, list):
+            if warn:
+                warn(f"wp:featuredmedia is a {type(media).__name__}, not a list; skipping featured image")
+            return []
+        return media
+
+    @staticmethod
+    def _bookmark_card_data(item, warn=None):
         """Map a REST post/page object to the card fields the renderer wants."""
-        excerpt = item.get('excerpt', {}).get('rendered', '') or ''
+        excerpt = WordPressPost._bookmark_rendered_field(item, 'excerpt', warn)
         excerpt = re.sub(r'<[^>]+>', '', excerpt)
         excerpt = html.unescape(excerpt)
         excerpt = re.sub(r'\[\s*(?:…|\.\.\.)\s*\]', '', excerpt)
@@ -195,13 +263,13 @@ class WordPressPost:
 
         image_url = None
         image_id = None
-        media = (item.get('_embedded') or {}).get('wp:featuredmedia') or []
+        media = WordPressPost._bookmark_featured_media(item, warn)
         if media and isinstance(media[0], dict) and media[0].get('source_url'):
             image_url = media[0]['source_url']
             image_id = media[0].get('id') or item.get('featured_media')
 
         return {
-            'title': html.unescape(item.get('title', {}).get('rendered', '')),
+            'title': html.unescape(WordPressPost._bookmark_rendered_field(item, 'title', warn)),
             'link': item.get('link', ''),
             'excerpt': excerpt,
             'image_url': image_url,

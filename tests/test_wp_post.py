@@ -2804,6 +2804,70 @@ class TestBookmarkResolution:
         wp._resolve_bookmark("my-other-post")
         assert mock_get.call_count == 2
 
+    @patch('wp_post.requests.get')
+    def test_title_wrong_type_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(title="Just a string")
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["title"] == ""
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_excerpt_none_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(excerpt=None)
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["excerpt"] == ""
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_embedded_list_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(_embedded=["not", "a", "dict"])
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["image_url"] is None
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_featuredmedia_dict_warns_but_still_produces_a_card(self, mock_get, wp, mock_response, capsys):
+        payload = self._post_payload(
+            _embedded={"wp:featuredmedia": {"id": 1, "source_url": "https://example.com/t.jpg"}}
+        )
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        data_again = wp._resolve_bookmark("my-other-post")
+        assert data is not None
+        assert data["image_url"] is None
+        assert data == data_again
+        assert mock_get.call_count == 1
+        assert capsys.readouterr().err != ""
+
+    @patch('wp_post.requests.get')
+    def test_missing_excerpt_and_embedded_still_produces_a_usable_card(self, mock_get, wp, mock_response, capsys):
+        payload = {
+            "title": {"rendered": "My Other Post"},
+            "link": "https://example.com/my-other-post/",
+        }
+        mock_get.return_value = mock_response(200, [payload])
+        data = wp._resolve_bookmark("my-other-post")
+        assert data["title"] == "My Other Post"
+        assert data["excerpt"] == ""
+        assert data["image_url"] is None
+        assert data["image_id"] is None
+        assert capsys.readouterr().err == ""
+
 
 class TestCalloutWiring:
     def test_resolver_is_passed_to_the_converter(self, wp, md_file):
