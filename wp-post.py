@@ -2230,9 +2230,14 @@ frontmatter fields:
                   Terms are auto-created if they don't exist
   meta            Custom post meta as {key: value}
   acf             Advanced Custom Fields as {field: value}
-  rankmath        Rank Math SEO meta with shorthand keys:
+  rankmath        Rank Math SEO meta. Shorthand keys:
                     title, description, focus_keyword
-                  Full rank_math_* keys also accepted
+                  Full rank_math_* keys also accepted.
+                  rankmath.schemas: {Type: {...}} writes each schema body
+                  as rank_math_schema_<Type> (PHP-serialised) for JSON-LD
+                  rich snippets (HowTo, Recipe, Product, etc.). Upsert per
+                  type; types not listed are left alone. Legacy
+                  rich_snippet / snippet_howto_* keys are warned and dropped.
   translation_set MSLS translation group key (multisite only)
 
 format resolution (first match wins):
