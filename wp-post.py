@@ -813,9 +813,11 @@ class WordPressPost:
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))
-            # rankmath.schemas is a nested dict of PHP-serialised schema bodies;
-            # pop it out before the scalar-meta pass so it isn't coerced into a
-            # rank_math_schemas string. See issue #24.
+            # rankmath.schemas is a nested dict of PHP-serialised schema bodies
+            # handled by update_rankmath_schemas below, not by update_rankmath_meta.
+            # Pop it out so (a) the schema value routes to the correct writer and
+            # (b) an otherwise-empty rankmath block doesn't trigger a scalar-meta
+            # update just because 'schemas' was present. See issue #24.
             schemas = rankmath_meta.pop('schemas', None)
             # Warn on legacy rich-snippet keys and drop them. These fields
             # were dead code as of Rank Math ~1.0.62; the shape they wrote
@@ -960,14 +962,24 @@ class WordPressPost:
             None on success or when schemas is empty.
             On HTTP failure: {"status_code": int, "error": str, "types": [str]}.
             On request exception: {"error": str, "types": [str]}.
+            On serialisation failure: {"error": str, "types": [str]}.
         """
         if not schemas:
             return None
 
-        meta = {
-            f"rank_math_schema_{type_name}": phpserialize.dumps(schema_body).decode("utf-8")
-            for type_name, schema_body in schemas.items()
-        }
+        types = sorted(schemas.keys())
+        try:
+            meta = {
+                f"rank_math_schema_{type_name}": phpserialize.dumps(schema_body).decode("utf-8")
+                for type_name, schema_body in schemas.items()
+            }
+        except Exception as e:
+            # Most likely a value phpserialize can't handle (datetime autoparsed
+            # by YAML, nested tuple, etc.). Surface as schema_failure so the
+            # publish still succeeds cleanly instead of raising a traceback.
+            print(f"⚠ Rank Math schema serialisation error: {e}", file=sys.stderr)
+            return {"error": f"serialisation: {e}", "types": types}
+
         payload = {
             "objectType": "post",
             "objectID": post_id,
@@ -977,9 +989,8 @@ class WordPressPost:
 
         if verbose:
             print(f"[verbose] Rank Math schemas: POST {url}")
-            print(f"[verbose] Types: {sorted(schemas.keys())}")
+            print(f"[verbose] Types: {types}")
 
-        types = sorted(schemas.keys())
         try:
             resp = requests.post(url, auth=self.auth, json=payload, timeout=15)
             if resp.status_code == 200:

@@ -3473,6 +3473,17 @@ class TestUpdateRankmathSchemas:
         assert result["types"] == ["HowTo"]
         assert "status_code" not in result
 
+    @patch("wp_post.requests.post")
+    def test_serialisation_failure_returns_failure_dict(self, mock_post, wp):
+        # Sets aren't PHP-serialisable; this must surface as schema_failure,
+        # not raise a traceback.
+        result = wp.update_rankmath_schemas(1, {"BadType": {"members": {1, 2, 3}}})
+        assert result is not None
+        assert "serialisation" in result["error"].lower()
+        assert result["types"] == ["BadType"]
+        assert "status_code" not in result
+        mock_post.assert_not_called()
+
 
 class TestRankmathLegacyKeys:
     """rankmath.rich_snippet and rankmath.snippet_howto_* are dead in modern
