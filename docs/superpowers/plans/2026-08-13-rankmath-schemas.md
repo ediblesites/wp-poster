@@ -766,7 +766,7 @@ The `main()` function propagates `msls_failures` from the result dict into the J
 
 **Files:**
 - Modify: `wp-post.py:2496-2517` (the `main()` result-handling block)
-- Test: `tests/test_wp_post.py` (append to the class that tests `msls_failures` CLI propagation - locate by `msls_failures.*payload` around lines 1970-2010, add a sibling test in that class)
+- Test: `tests/test_wp_post.py` - append a sibling class `TestMainSchemaFailureExit` next to `TestMainMslsExit` (line 1957). Follow the same fixture pattern: `@patch.object(wp_post.WordPressPost, "post_to_wordpress")` + `@patch("wp_post.load_config")`; pass `--site-url`, `--username`, `--app-password` in `sys.argv`.
 
 **Interfaces:**
 - Consumes: `result['schema_failure']` from Task 4.
@@ -774,70 +774,98 @@ The `main()` function propagates `msls_failures` from the result dict into the J
   - JSON summary printed by `main()` includes `schema_failure` when set.
   - `main()` exits non-zero when `schema_failure` is set, whether or not `msls_failures` is also set.
 
-- [ ] **Step 1: Locate the existing main() CLI test class**
+- [ ] **Step 1: Write the failing tests**
 
-Search `tests/test_wp_post.py` for the test at line ~1973:
-
-```bash
-grep -n 'msls_failures' tests/test_wp_post.py
-```
-
-The tests around lines 1970-2010 exercise `main()` directly, patching `WordPressPost.post_to_wordpress` and asserting on stdout JSON. Add new tests to the same class.
-
-- [ ] **Step 2: Write the failing tests**
-
-Append to that class (adjust class name after locating it):
+Append to `tests/test_wp_post.py` immediately after `TestMainMslsExit` (which ends around line 2007):
 
 ```python
-    @patch("wp_post.WordPressPost.post_to_wordpress")
-    def test_main_surfaces_schema_failure(self, mock_publish, tmp_path, capsys, monkeypatch):
-        mock_publish.return_value = {
-            "success": True,
-            "id": 50,
-            "url": "https://example.com/?p=50",
-            "title": "T",
+class TestMainSchemaFailureExit:
+    """main() must reflect Rank Math schema-write failures in its machine-readable
+    output and exit code, mirroring the msls_failures surface (issue #24)."""
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_schema_failure_exits_nonzero_and_reports(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 50, "url": "https://example.com/p/", "title": "T",
             "schema_failure": {
-                "status_code": 400,
-                "error": "rejected",
-                "types": ["HowTo"],
+                "status_code": 400, "error": "rejected", "types": ["HowTo"],
             },
         }
-        # Replicate the surrounding class's main() invocation harness (a
-        # minimal md file + argv patch). If the class already has a helper
-        # for this, use it instead of re-writing.
-        f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody\n")
-        monkeypatch.setattr("sys.argv", ["wp-post", str(f)])
-        with pytest.raises(SystemExit) as exc:
-            wp_post.main()
-        assert exc.value.code == 1
-        out = capsys.readouterr().out
-        payload = json.loads(out.strip().splitlines()[-1])
-        assert payload["schema_failure"]["status_code"] == 400
 
-    @patch("wp_post.WordPressPost.post_to_wordpress")
-    def test_main_clean_success_no_schema_failure_key(self, mock_publish, tmp_path, capsys, monkeypatch):
-        mock_publish.return_value = {
-            "success": True, "id": 51,
-            "url": "https://example.com/?p=51", "title": "T",
-        }
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["schema_failure"]["status_code"] == 400
+        assert payload["schema_failure"]["types"] == ["HowTo"]
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_clean_publish_has_no_schema_failure_key(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
         f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody\n")
-        monkeypatch.setattr("sys.argv", ["wp-post", str(f)])
-        wp_post.main()
-        out = capsys.readouterr().out
-        payload = json.loads(out.strip().splitlines()[-1])
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 51, "url": "https://example.com/p/", "title": "T",
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            wp_post.main()
+
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["success"] is True
         assert "schema_failure" not in payload
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_both_msls_and_schema_failures_exit_nonzero(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        """A publish with BOTH kinds of failure surfaces both and exits 1 once."""
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 52, "url": "https://example.com/p/", "title": "T",
+            "msls_failures": [{"locale": "es_ES", "post_id": 20, "ok": False, "error": "boom"}],
+            "schema_failure": {"status_code": 400, "error": "rejected", "types": ["HowTo"]},
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload.get("msls_failures")
+        assert payload["schema_failure"]["types"] == ["HowTo"]
 ```
 
-Note: the exact fixture/harness (config-file setup, credential injection, etc.) used by the sibling `msls_failures` test may need to be replicated. Read the surrounding tests before writing these and match their pattern; the above assumes `main()` can be called with a file argv and defaults for the rest.
+- [ ] **Step 2: Run the new tests to verify they fail**
 
-- [ ] **Step 3: Run the new tests to verify they fail**
-
-Run: `python3 -m pytest tests/test_wp_post.py -k "schema_failure" -v`
+Run: `python3 -m pytest tests/test_wp_post.py::TestMainSchemaFailureExit -v`
 Expected: FAILs (main() ignores `schema_failure`, exits 0, doesn't include it in output).
 
-- [ ] **Step 4: Wire schema_failure into main()**
+- [ ] **Step 3: Wire schema_failure into main()**
 
 Replace `wp-post.py:2496-2517`:
 
@@ -897,17 +925,17 @@ with:
         sys.exit(1)
 ```
 
-- [ ] **Step 5: Run the new tests to verify they pass**
+- [ ] **Step 4: Run the new tests to verify they pass**
 
-Run: `python3 -m pytest tests/test_wp_post.py -k "schema_failure" -v`
-Expected: 2 PASS.
+Run: `python3 -m pytest tests/test_wp_post.py::TestMainSchemaFailureExit -v`
+Expected: 3 PASS.
 
-- [ ] **Step 6: Run the full suite to check for regressions on msls_failures propagation**
+- [ ] **Step 5: Run the full suite to check for regressions on msls_failures propagation**
 
 Run: `python3 -m pytest -q`
-Expected: 437 passing (435 + 2 new). Pay attention to the existing `msls_failures` main-level tests: they should still pass since the observable behaviour (JSON in stdout, exit non-zero) is unchanged.
+Expected: 438 passing (435 + 3 new). Pay attention to the existing `msls_failures` main-level tests: they should still pass since the observable behaviour (JSON in stdout, exit non-zero) is unchanged.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add wp-post.py tests/test_wp_post.py
@@ -1007,7 +1035,7 @@ Replace with:
 - [ ] **Step 4: Verify tests still pass**
 
 Run: `python3 -m pytest -q`
-Expected: 437 passing (no change; doc-only edits).
+Expected: 438 passing (no change; doc-only edits).
 
 - [ ] **Step 5: Commit**
 
@@ -1108,7 +1136,7 @@ Closes #24.
 - Schema-write failures surface as `result['schema_failure']` (mirror of `msls_failures`) and propagate through `main()`'s JSON output and exit code.
 
 ## Test plan
-- [x] Unit tests: 437 passing (was 418; +19 new).
+- [x] Unit tests: 438 passing (was 418; +20 new).
 - [x] Live smoke test on <site>/<slug>: HowTo JSON-LD renders in `@graph`.
 - [x] Empty-dict republish leaves existing HowTo row intact.
 - [x] Legacy `rich_snippet` frontmatter is warned + dropped, no meta row written.
