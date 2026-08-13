@@ -798,7 +798,6 @@ class TestRankmathSchemasFrontmatter:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
     def test_populated_schemas_written_after_scalar_meta(self, mock_get, mock_post, wp, md_file, mock_response):
-        import phpserialize
         howto = {"@type": "HowTo", "name": "How"}
         path = md_file(
             {"title": "T", "rankmath": {"title": "SEO", "schemas": {"HowTo": howto}}},
@@ -817,9 +816,12 @@ class TestRankmathSchemasFrontmatter:
         assert len(rm_calls) == 2
         scalar_meta = rm_calls[0][1]["json"]["meta"]
         assert "rank_math_schemas" not in scalar_meta  # .pop worked
+        # Schema body goes over the wire as a nested dict; the WP REST layer
+        # decodes it and update_post_meta single-serialises via maybe_serialize.
+        # Pre-PHP-serialising in Python would trigger maybe_serialize's
+        # double-wrap safety and store corrupted data (see issue #24 hotfix).
         schema_meta = rm_calls[1][1]["json"]["meta"]
-        assert schema_meta["rank_math_schema_HowTo"] == \
-               phpserialize.dumps(howto).decode("utf-8")
+        assert schema_meta["rank_math_schema_HowTo"] == howto
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
@@ -3359,55 +3361,6 @@ class TestTestModeLocale:
         assert "Warning</strong>" in capsys.readouterr().out
 
 
-class TestPhpSerialize:
-    """Pins the phpserialize contract wp-post relies on for schema meta."""
-
-    def test_dict_round_trip(self):
-        import phpserialize
-        data = {"@type": "HowTo", "name": "Test"}
-        serialised = phpserialize.dumps(data).decode("utf-8")
-        assert serialised.startswith("a:2:")
-        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
-        assert loaded == data
-
-    def test_nested_list_serialises_as_php_indexed_array(self):
-        # PHP has no distinct list type; Python lists serialise as PHP arrays
-        # with integer keys 0..N-1. This is what Rank Math's unserialize() will
-        # decode back into an indexed PHP array on the server side - exactly
-        # what HowTo's `step` field expects. The Python round-trip via
-        # phpserialize.loads returns those as numeric-keyed dicts (there is no
-        # ambiguity in the serialised form to distinguish list from dict), so
-        # we pin on the serialised string plus the round-tripped dict shape.
-        import phpserialize
-        data = {
-            "@type": "HowTo",
-            "step": [
-                {"@type": "HowToStep", "text": "First"},
-                {"@type": "HowToStep", "text": "Second"},
-            ],
-        }
-        serialised = phpserialize.dumps(data).decode("utf-8")
-        # step is an a:2 array with i:0 / i:1 numeric keys - indexed, not hash.
-        assert 'a:2:{s:5:"@type";s:5:"HowTo";s:4:"step";a:2:{i:0;' in serialised
-        assert '"First"' in serialised
-        assert '"Second"' in serialised
-        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
-        assert loaded == {
-            "@type": "HowTo",
-            "step": {
-                0: {"@type": "HowToStep", "text": "First"},
-                1: {"@type": "HowToStep", "text": "Second"},
-            },
-        }
-
-    def test_unicode_survives(self):
-        import phpserialize
-        data = {"description": "So senden Sie ein PDF per Fax."}
-        serialised = phpserialize.dumps(data).decode("utf-8")
-        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
-        assert loaded == data
-
-
 class TestUpdateRankmathSchemas:
     """Direct tests for the update_rankmath_schemas method (issue #24)."""
 
@@ -3419,7 +3372,6 @@ class TestUpdateRankmathSchemas:
 
     @patch("wp_post.requests.post")
     def test_single_schema_written(self, mock_post, wp, mock_response):
-        import phpserialize
         mock_post.return_value = mock_response(200)
         schema = {"@type": "HowTo", "name": "Test"}
         result = wp.update_rankmath_schemas(1, {"HowTo": schema})
@@ -3430,8 +3382,12 @@ class TestUpdateRankmathSchemas:
         payload = mock_post.call_args[1]["json"]
         assert payload["objectType"] == "post"
         assert payload["objectID"] == 1
-        expected = phpserialize.dumps(schema).decode("utf-8")
-        assert payload["meta"]["rank_math_schema_HowTo"] == expected
+        # Sent as a nested dict, not a PHP-serialised string. WP's
+        # update_post_meta calls maybe_serialize which single-serialises the
+        # array once. Pre-serialising in Python would trip maybe_serialize's
+        # is_serialized() safety wrap (core.trac 12930) and store corrupted
+        # double-wrapped data that fatals Rank Math on render.
+        assert payload["meta"]["rank_math_schema_HowTo"] == schema
 
     @patch("wp_post.requests.post")
     def test_multiple_schemas_one_post(self, mock_post, wp, mock_response):
@@ -3474,15 +3430,20 @@ class TestUpdateRankmathSchemas:
         assert "status_code" not in result
 
     @patch("wp_post.requests.post")
-    def test_serialisation_failure_returns_failure_dict(self, mock_post, wp):
-        # Sets aren't PHP-serialisable; this must surface as schema_failure,
-        # not raise a traceback.
+    def test_json_encoding_failure_returns_failure_dict(self, mock_post, wp):
+        # requests.post(json=payload) internally calls json.dumps; an
+        # unencodable schema value (a set, a datetime YAML autoparsed from a
+        # date-like string) raises TypeError there. It's not a
+        # RequestException, so we catch it explicitly and surface it as
+        # schema_failure instead of a traceback.
+        mock_post.side_effect = TypeError(
+            "Object of type set is not JSON serializable"
+        )
         result = wp.update_rankmath_schemas(1, {"BadType": {"members": {1, 2, 3}}})
         assert result is not None
-        assert "serialisation" in result["error"].lower()
+        assert "JSON serializable" in result["error"]
         assert result["types"] == ["BadType"]
         assert "status_code" not in result
-        mock_post.assert_not_called()
 
 
 class TestRankmathLegacyKeys:

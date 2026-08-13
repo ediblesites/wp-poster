@@ -50,10 +50,10 @@ rankmath:                      # Rank Math SEO plugin
 # instead of a stale override. An empty/absent excerpt leaves it untouched.
 #
 # rankmath.schemas: each key becomes a rank_math_schema_<Type> post_meta row
-# holding the PHP-serialised schema body, which Rank Math reads back into the
-# page's JSON-LD @graph on render. Upsert per type - a type not listed in a
-# subsequent publish is NOT removed (there is no delete-orphan pass). Empty
-# {} is a no-op; the key being absent leaves existing rows untouched.
+# holding the schema body, which Rank Math reads back into the page's JSON-LD
+# @graph on render. Upsert per type - a type not listed in a subsequent publish
+# is NOT removed (there is no delete-orphan pass). Empty {} is a no-op; the key
+# being absent leaves existing rows untouched.
 
 translation_set: about-us       # MSLS translation group key (multisite only)
 ---
