@@ -2113,6 +2113,87 @@ class TestMainMslsExit:
         assert "msls_failures" not in payload
 
 
+class TestMainSchemaFailureExit:
+    """main() must reflect Rank Math schema-write failures in its machine-readable
+    output and exit code, mirroring the msls_failures surface (issue #24)."""
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_schema_failure_exits_nonzero_and_reports(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 50, "url": "https://example.com/p/", "title": "T",
+            "schema_failure": {
+                "status_code": 400, "error": "rejected", "types": ["HowTo"],
+            },
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["schema_failure"]["status_code"] == 400
+        assert payload["schema_failure"]["types"] == ["HowTo"]
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_clean_publish_has_no_schema_failure_key(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 51, "url": "https://example.com/p/", "title": "T",
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            wp_post.main()
+
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["success"] is True
+        assert "schema_failure" not in payload
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_both_msls_and_schema_failures_exit_nonzero(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        """A publish with BOTH kinds of failure surfaces both and exits 1 once."""
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 52, "url": "https://example.com/p/", "title": "T",
+            "msls_failures": [{"locale": "es_ES", "post_id": 20, "ok": False, "error": "boom"}],
+            "schema_failure": {"status_code": 400, "error": "rejected", "types": ["HowTo"]},
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload.get("msls_failures")
+        assert payload["schema_failure"]["types"] == ["HowTo"]
+
+
 # ===========================================================================
 # Cache purging: config discovery and transport
 # ===========================================================================

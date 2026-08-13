@@ -2587,15 +2587,19 @@ def main():
             'title': result['title'],
             'url': result['url']
         }
-        # The post is live, but MSLS translation links failed to write. Surface
-        # it in the machine-readable output and exit non-zero so automation
-        # notices instead of treating the publish as fully complete (issue #11).
+        # The post is live, but a downstream write (MSLS translation links,
+        # Rank Math schema meta) failed. Surface in the machine-readable
+        # output and exit non-zero so automation notices instead of treating
+        # the publish as fully complete (issues #11, #24).
         msls_failures = result.get('msls_failures')
+        schema_failure = result.get('schema_failure')
         if msls_failures:
             summary['msls_failures'] = msls_failures
-            print(json.dumps(summary))
-            sys.exit(1)
+        if schema_failure:
+            summary['schema_failure'] = schema_failure
         print(json.dumps(summary))
+        if msls_failures or schema_failure:
+            sys.exit(1)
     else:
         print(json.dumps({
             'success': False,
