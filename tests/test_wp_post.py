@@ -754,6 +754,113 @@ class TestUpdateRankmathMeta:
         mock_post.assert_not_called()
 
 
+class TestRankmathSchemasFrontmatter:
+    """rankmath.schemas frontmatter -> rank_math_schema_<Type> meta (issue #24)."""
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_absent_schemas_no_schema_call(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO"}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 30, "link": "https://example.com/?p=30",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # scalar rankmath updateMeta
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        # Exactly one rankmath call (scalar); no second schemas call.
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 1
+        assert "rank_math_schema_HowTo" not in rm_calls[0][1]["json"]["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_empty_schemas_dict_no_schema_call(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO", "schemas": {}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 31, "link": "https://example.com/?p=31",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 1
+        # Also: scalar call must not have leaked a rank_math_schemas key.
+        assert "rank_math_schemas" not in rm_calls[0][1]["json"]["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_populated_schemas_written_after_scalar_meta(self, mock_get, mock_post, wp, md_file, mock_response):
+        import phpserialize
+        howto = {"@type": "HowTo", "name": "How"}
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO", "schemas": {"HowTo": howto}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 32, "link": "https://example.com/?p=32",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # scalar
+            mock_response(200),  # schemas
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        assert "schema_failure" not in result
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 2
+        scalar_meta = rm_calls[0][1]["json"]["meta"]
+        assert "rank_math_schemas" not in scalar_meta  # .pop worked
+        schema_meta = rm_calls[1][1]["json"]["meta"]
+        assert schema_meta["rank_math_schema_HowTo"] == \
+               phpserialize.dumps(howto).decode("utf-8")
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_schemas_only_no_scalar_meta(self, mock_get, mock_post, wp, md_file, mock_response):
+        """A schemas-only rankmath block still triggers the schema call, even
+        though the scalar-meta call is skipped (no scalar keys left)."""
+        path = md_file(
+            {"title": "T", "rankmath": {"schemas": {"HowTo": {"@type": "HowTo"}}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 33, "link": "https://example.com/?p=33",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # schemas
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 1
+        assert "rank_math_schema_HowTo" in rm_calls[0][1]["json"]["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_schema_failure_surfaced_via_result(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file(
+            {"title": "T", "rankmath": {"schemas": {"HowTo": {"@type": "HowTo"}}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 34, "link": "https://example.com/?p=34",
+                                "title": {"rendered": "T"}}),
+            mock_response(400, text="rejected"),  # schemas call fails
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        # Publish still succeeds; schema failure surfaces separately.
+        assert result["success"] is True
+        assert "schema_failure" in result
+        assert result["schema_failure"]["status_code"] == 400
+        assert result["schema_failure"]["types"] == ["HowTo"]
+
+
 # ===========================================================================
 # 6. Writeback frontmatter (id/slug after create)
 # ===========================================================================
@@ -2006,6 +2113,87 @@ class TestMainMslsExit:
         assert "msls_failures" not in payload
 
 
+class TestMainSchemaFailureExit:
+    """main() must reflect Rank Math schema-write failures in its machine-readable
+    output and exit code, mirroring the msls_failures surface (issue #24)."""
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_schema_failure_exits_nonzero_and_reports(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 50, "url": "https://example.com/p/", "title": "T",
+            "schema_failure": {
+                "status_code": 400, "error": "rejected", "types": ["HowTo"],
+            },
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["schema_failure"]["status_code"] == 400
+        assert payload["schema_failure"]["types"] == ["HowTo"]
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_clean_publish_has_no_schema_failure_key(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 51, "url": "https://example.com/p/", "title": "T",
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            wp_post.main()
+
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload["success"] is True
+        assert "schema_failure" not in payload
+
+    @patch.object(wp_post.WordPressPost, "post_to_wordpress")
+    @patch("wp_post.load_config")
+    def test_both_msls_and_schema_failures_exit_nonzero(
+        self, mock_load_config, mock_post_to_wp, tmp_path, capsys
+    ):
+        """A publish with BOTH kinds of failure surfaces both and exits 1 once."""
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        mock_load_config.return_value = {
+            "site_url": "https://example.com", "username": "u", "app_password": "p",
+        }
+        mock_post_to_wp.return_value = {
+            "success": True, "id": 52, "url": "https://example.com/p/", "title": "T",
+            "msls_failures": [{"locale": "es_ES", "post_id": 20, "ok": False, "error": "boom"}],
+            "schema_failure": {"status_code": 400, "error": "rejected", "types": ["HowTo"]},
+        }
+
+        with patch("sys.argv", ["wp-post", "--site-url", "https://example.com",
+                                 "--username", "u", "--app-password", "p", str(f)]):
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert payload.get("msls_failures")
+        assert payload["schema_failure"]["types"] == ["HowTo"]
+
+
 # ===========================================================================
 # Cache purging: config discovery and transport
 # ===========================================================================
@@ -3169,3 +3357,207 @@ class TestTestModeLocale:
                 wp_post.main()
         assert exc.value.code == 0
         assert "Warning</strong>" in capsys.readouterr().out
+
+
+class TestPhpSerialize:
+    """Pins the phpserialize contract wp-post relies on for schema meta."""
+
+    def test_dict_round_trip(self):
+        import phpserialize
+        data = {"@type": "HowTo", "name": "Test"}
+        serialised = phpserialize.dumps(data).decode("utf-8")
+        assert serialised.startswith("a:2:")
+        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
+        assert loaded == data
+
+    def test_nested_list_serialises_as_php_indexed_array(self):
+        # PHP has no distinct list type; Python lists serialise as PHP arrays
+        # with integer keys 0..N-1. This is what Rank Math's unserialize() will
+        # decode back into an indexed PHP array on the server side - exactly
+        # what HowTo's `step` field expects. The Python round-trip via
+        # phpserialize.loads returns those as numeric-keyed dicts (there is no
+        # ambiguity in the serialised form to distinguish list from dict), so
+        # we pin on the serialised string plus the round-tripped dict shape.
+        import phpserialize
+        data = {
+            "@type": "HowTo",
+            "step": [
+                {"@type": "HowToStep", "text": "First"},
+                {"@type": "HowToStep", "text": "Second"},
+            ],
+        }
+        serialised = phpserialize.dumps(data).decode("utf-8")
+        # step is an a:2 array with i:0 / i:1 numeric keys - indexed, not hash.
+        assert 'a:2:{s:5:"@type";s:5:"HowTo";s:4:"step";a:2:{i:0;' in serialised
+        assert '"First"' in serialised
+        assert '"Second"' in serialised
+        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
+        assert loaded == {
+            "@type": "HowTo",
+            "step": {
+                0: {"@type": "HowToStep", "text": "First"},
+                1: {"@type": "HowToStep", "text": "Second"},
+            },
+        }
+
+    def test_unicode_survives(self):
+        import phpserialize
+        data = {"description": "So senden Sie ein PDF per Fax."}
+        serialised = phpserialize.dumps(data).decode("utf-8")
+        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
+        assert loaded == data
+
+
+class TestUpdateRankmathSchemas:
+    """Direct tests for the update_rankmath_schemas method (issue #24)."""
+
+    @patch("wp_post.requests.post")
+    def test_empty_dict_no_request(self, mock_post, wp):
+        result = wp.update_rankmath_schemas(1, {})
+        mock_post.assert_not_called()
+        assert result is None
+
+    @patch("wp_post.requests.post")
+    def test_single_schema_written(self, mock_post, wp, mock_response):
+        import phpserialize
+        mock_post.return_value = mock_response(200)
+        schema = {"@type": "HowTo", "name": "Test"}
+        result = wp.update_rankmath_schemas(1, {"HowTo": schema})
+        assert result is None
+        assert mock_post.call_count == 1
+        url = mock_post.call_args[0][0]
+        assert url.endswith("/wp-json/rankmath/v1/updateMeta")
+        payload = mock_post.call_args[1]["json"]
+        assert payload["objectType"] == "post"
+        assert payload["objectID"] == 1
+        expected = phpserialize.dumps(schema).decode("utf-8")
+        assert payload["meta"]["rank_math_schema_HowTo"] == expected
+
+    @patch("wp_post.requests.post")
+    def test_multiple_schemas_one_post(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(200)
+        result = wp.update_rankmath_schemas(1, {
+            "HowTo": {"@type": "HowTo"},
+            "Recipe": {"@type": "Recipe"},
+        })
+        assert result is None
+        assert mock_post.call_count == 1
+        payload = mock_post.call_args[1]["json"]
+        assert "rank_math_schema_HowTo" in payload["meta"]
+        assert "rank_math_schema_Recipe" in payload["meta"]
+
+    @patch("wp_post.requests.post")
+    def test_type_key_case_preserved(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(200)
+        wp.update_rankmath_schemas(1, {"HowTo": {"@type": "HowTo"}})
+        payload = mock_post.call_args[1]["json"]
+        assert "rank_math_schema_HowTo" in payload["meta"]
+        assert "rank_math_schema_howto" not in payload["meta"]
+
+    @patch("wp_post.requests.post")
+    def test_http_failure_returns_failure_dict(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(400, text="Bad Request")
+        result = wp.update_rankmath_schemas(1, {"HowTo": {"@type": "HowTo"}})
+        assert result is not None
+        assert result["status_code"] == 400
+        assert "Bad Request" in result["error"]
+        assert result["types"] == ["HowTo"]
+
+    @patch("wp_post.requests.post")
+    def test_exception_returns_failure_dict(self, mock_post, wp):
+        import requests as _requests
+        mock_post.side_effect = _requests.RequestException("boom")
+        result = wp.update_rankmath_schemas(1, {"HowTo": {"@type": "HowTo"}})
+        assert result is not None
+        assert "boom" in result["error"]
+        assert result["types"] == ["HowTo"]
+        assert "status_code" not in result
+
+    @patch("wp_post.requests.post")
+    def test_serialisation_failure_returns_failure_dict(self, mock_post, wp):
+        # Sets aren't PHP-serialisable; this must surface as schema_failure,
+        # not raise a traceback.
+        result = wp.update_rankmath_schemas(1, {"BadType": {"members": {1, 2, 3}}})
+        assert result is not None
+        assert "serialisation" in result["error"].lower()
+        assert result["types"] == ["BadType"]
+        assert "status_code" not in result
+        mock_post.assert_not_called()
+
+
+class TestRankmathLegacyKeys:
+    """rankmath.rich_snippet and rankmath.snippet_howto_* are dead in modern
+    Rank Math; warn + drop, do not silently pass them through (issue #24)."""
+
+    LEGACY_KEYS = [
+        "rich_snippet",
+        "snippet_howto_type",
+        "snippet_howto_name",
+        "snippet_howto_desc",
+    ]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_each_legacy_key_warns_and_drops(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        for key in self.LEGACY_KEYS:
+            mock_post.reset_mock()
+            path = md_file(
+                {"title": "T", "rankmath": {"title": "SEO", key: "anything"}},
+                "body",
+            )
+            mock_post.side_effect = [
+                mock_response(201, {"id": 40, "link": "https://example.com/?p=40",
+                                    "title": {"rendered": "T"}}),
+                mock_response(200),  # scalar rankmath call
+            ]
+            wp.post_to_wordpress(path, raw=True)
+            captured = capsys.readouterr()
+            assert key in captured.err, f"expected stderr warning for {key}"
+            assert "rankmath.schemas" in captured.err, \
+                f"stderr for {key} should name rankmath.schemas as the replacement"
+            rm = _rankmath_payload(mock_post)
+            assert rm is not None
+            assert key not in rm["meta"]
+            # Full-key variant should never appear either.
+            assert f"rank_math_{key}" not in rm["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_only_legacy_keys_makes_no_scalar_call(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        """A rankmath block containing only legacy keys becomes empty after
+        the drop, so no scalar-meta POST should be made."""
+        path = md_file(
+            {"title": "T", "rankmath": {"rich_snippet": "howto"}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 41, "link": "https://example.com/?p=41",
+                                "title": {"rendered": "T"}}),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        # Only the create-post call. If a scalar rankmath call fires, side_effect
+        # will StopIteration.
+        assert _rankmath_payload(mock_post) is None
+        captured = capsys.readouterr()
+        assert "rich_snippet" in captured.err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_non_legacy_keys_untouched(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        """A rankmath block with an unknown (but not legacy-listed) key still
+        gets that key passed through - no over-broad warning."""
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO", "rank_math_robots": "noindex"}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 42, "link": "https://example.com/?p=42",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        rm = _rankmath_payload(mock_post)
+        assert rm["meta"].get("rank_math_robots") == "noindex"
+        captured = capsys.readouterr()
+        # No spurious "legacy" warning for a non-listed key.
+        assert "rank_math_robots" not in captured.err

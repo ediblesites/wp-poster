@@ -38,9 +38,22 @@ rankmath:                      # Rank Math SEO plugin
   description: SEO desc        # shorthand → rank_math_description (wins over excerpt)
   focus_keyword: keyword       # shorthand → rank_math_focus_keyword
                                # full rank_math_* keys also accepted
+  schemas:                     # optional: JSON-LD rich-snippet schemas
+    HowTo:                     # key becomes rank_math_schema_HowTo
+      "@type": HowTo
+      name: 'How to do the thing'
+      step:
+        - {"@type": HowToStep, name: 'Step 1', text: '…'}
+        - {"@type": HowToStep, name: 'Step 2', text: '…'}
 # If rankmath.description is omitted, a non-empty `excerpt` is pushed as
 # rank_math_description so the live <meta name="description"> tracks the excerpt
 # instead of a stale override. An empty/absent excerpt leaves it untouched.
+#
+# rankmath.schemas: each key becomes a rank_math_schema_<Type> post_meta row
+# holding the PHP-serialised schema body, which Rank Math reads back into the
+# page's JSON-LD @graph on render. Upsert per type - a type not listed in a
+# subsequent publish is NOT removed (there is no delete-orphan pass). Empty
+# {} is a no-op; the key being absent leaves existing rows untouched.
 
 translation_set: about-us       # MSLS translation group key (multisite only)
 ---
@@ -67,7 +80,7 @@ translation_set: about-us       # MSLS translation group key (multisite only)
 | `taxonomies`     | map           | no       | Keys are taxonomy slugs; values are term(s)            |
 | `meta`           | map           | no       | Arbitrary key-value pairs                              |
 | `acf`            | map           | no       | ACF field name-value pairs                             |
-| `rankmath`       | map           | no       | SEO meta; shorthand or full `rank_math_*` keys         |
+| `rankmath`       | map           | no       | SEO meta; shorthand or full `rank_math_*` keys; `schemas: {Type: {…}}` writes JSON-LD rich-snippet schemas |
 | `translation_set` | string      | no       | Groups posts across multisite subsites for MSLS linking |
 
 ## Image handling
