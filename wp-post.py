@@ -817,6 +817,23 @@ class WordPressPost:
             # pop it out before the scalar-meta pass so it isn't coerced into a
             # rank_math_schemas string. See issue #24.
             schemas = rankmath_meta.pop('schemas', None)
+            # Warn on legacy rich-snippet keys and drop them. These fields
+            # were dead code as of Rank Math ~1.0.62; the shape they wrote
+            # into is no longer read by the JSON-LD renderer. See issue #24.
+            _LEGACY_RANKMATH_KEYS = (
+                'rich_snippet',
+                'snippet_howto_type',
+                'snippet_howto_name',
+                'snippet_howto_desc',
+            )
+            for legacy_key in _LEGACY_RANKMATH_KEYS:
+                if legacy_key in rankmath_meta:
+                    print(
+                        f"⚠ rankmath.{legacy_key} is a dead Rank Math field; "
+                        f"use rankmath.schemas instead. Dropping.",
+                        file=sys.stderr,
+                    )
+                    rankmath_meta.pop(legacy_key)
             # Reconcile rank_math_description to the excerpt so an excerpt change
             # can't leave a stale SEO description live (issue #13). An explicit
             # rankmath.description always wins; an empty/absent excerpt leaves

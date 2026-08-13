@@ -3391,3 +3391,81 @@ class TestUpdateRankmathSchemas:
         assert "boom" in result["error"]
         assert result["types"] == ["HowTo"]
         assert "status_code" not in result
+
+
+class TestRankmathLegacyKeys:
+    """rankmath.rich_snippet and rankmath.snippet_howto_* are dead in modern
+    Rank Math; warn + drop, do not silently pass them through (issue #24)."""
+
+    LEGACY_KEYS = [
+        "rich_snippet",
+        "snippet_howto_type",
+        "snippet_howto_name",
+        "snippet_howto_desc",
+    ]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_each_legacy_key_warns_and_drops(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        for key in self.LEGACY_KEYS:
+            mock_post.reset_mock()
+            path = md_file(
+                {"title": "T", "rankmath": {"title": "SEO", key: "anything"}},
+                "body",
+            )
+            mock_post.side_effect = [
+                mock_response(201, {"id": 40, "link": "https://example.com/?p=40",
+                                    "title": {"rendered": "T"}}),
+                mock_response(200),  # scalar rankmath call
+            ]
+            wp.post_to_wordpress(path, raw=True)
+            captured = capsys.readouterr()
+            assert key in captured.err, f"expected stderr warning for {key}"
+            assert "rankmath.schemas" in captured.err, \
+                f"stderr for {key} should name rankmath.schemas as the replacement"
+            rm = _rankmath_payload(mock_post)
+            assert rm is not None
+            assert key not in rm["meta"]
+            # Full-key variant should never appear either.
+            assert f"rank_math_{key}" not in rm["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_only_legacy_keys_makes_no_scalar_call(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        """A rankmath block containing only legacy keys becomes empty after
+        the drop, so no scalar-meta POST should be made."""
+        path = md_file(
+            {"title": "T", "rankmath": {"rich_snippet": "howto"}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 41, "link": "https://example.com/?p=41",
+                                "title": {"rendered": "T"}}),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        # Only the create-post call. If a scalar rankmath call fires, side_effect
+        # will StopIteration.
+        assert _rankmath_payload(mock_post) is None
+        captured = capsys.readouterr()
+        assert "rich_snippet" in captured.err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_non_legacy_keys_untouched(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        """A rankmath block with an unknown (but not legacy-listed) key still
+        gets that key passed through - no over-broad warning."""
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO", "rank_math_robots": "noindex"}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 42, "link": "https://example.com/?p=42",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        wp.post_to_wordpress(path, raw=True)
+        rm = _rankmath_payload(mock_post)
+        assert rm["meta"].get("rank_math_robots") == "noindex"
+        captured = capsys.readouterr()
+        # No spurious "legacy" warning for a non-listed key.
+        assert "rank_math_robots" not in captured.err
