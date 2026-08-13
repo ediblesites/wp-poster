@@ -754,6 +754,113 @@ class TestUpdateRankmathMeta:
         mock_post.assert_not_called()
 
 
+class TestRankmathSchemasFrontmatter:
+    """rankmath.schemas frontmatter -> rank_math_schema_<Type> meta (issue #24)."""
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_absent_schemas_no_schema_call(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO"}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 30, "link": "https://example.com/?p=30",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # scalar rankmath updateMeta
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        # Exactly one rankmath call (scalar); no second schemas call.
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 1
+        assert "rank_math_schema_HowTo" not in rm_calls[0][1]["json"]["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_empty_schemas_dict_no_schema_call(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO", "schemas": {}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 31, "link": "https://example.com/?p=31",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 1
+        # Also: scalar call must not have leaked a rank_math_schemas key.
+        assert "rank_math_schemas" not in rm_calls[0][1]["json"]["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_populated_schemas_written_after_scalar_meta(self, mock_get, mock_post, wp, md_file, mock_response):
+        import phpserialize
+        howto = {"@type": "HowTo", "name": "How"}
+        path = md_file(
+            {"title": "T", "rankmath": {"title": "SEO", "schemas": {"HowTo": howto}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 32, "link": "https://example.com/?p=32",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # scalar
+            mock_response(200),  # schemas
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        assert "schema_failure" not in result
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 2
+        scalar_meta = rm_calls[0][1]["json"]["meta"]
+        assert "rank_math_schemas" not in scalar_meta  # .pop worked
+        schema_meta = rm_calls[1][1]["json"]["meta"]
+        assert schema_meta["rank_math_schema_HowTo"] == \
+               phpserialize.dumps(howto).decode("utf-8")
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_schemas_only_no_scalar_meta(self, mock_get, mock_post, wp, md_file, mock_response):
+        """A schemas-only rankmath block still triggers the schema call, even
+        though the scalar-meta call is skipped (no scalar keys left)."""
+        path = md_file(
+            {"title": "T", "rankmath": {"schemas": {"HowTo": {"@type": "HowTo"}}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 33, "link": "https://example.com/?p=33",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # schemas
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        rm_calls = [c for c in mock_post.call_args_list if "rankmath" in c[0][0]]
+        assert len(rm_calls) == 1
+        assert "rank_math_schema_HowTo" in rm_calls[0][1]["json"]["meta"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_schema_failure_surfaced_via_result(self, mock_get, mock_post, wp, md_file, mock_response):
+        path = md_file(
+            {"title": "T", "rankmath": {"schemas": {"HowTo": {"@type": "HowTo"}}}},
+            "body",
+        )
+        mock_post.side_effect = [
+            mock_response(201, {"id": 34, "link": "https://example.com/?p=34",
+                                "title": {"rendered": "T"}}),
+            mock_response(400, text="rejected"),  # schemas call fails
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        # Publish still succeeds; schema failure surfaces separately.
+        assert result["success"] is True
+        assert "schema_failure" in result
+        assert result["schema_failure"]["status_code"] == 400
+        assert result["schema_failure"]["types"] == ["HowTo"]
+
+
 # ===========================================================================
 # 6. Writeback frontmatter (id/slug after create)
 # ===========================================================================

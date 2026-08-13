@@ -813,6 +813,10 @@ class WordPressPost:
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))
+            # rankmath.schemas is a nested dict of PHP-serialised schema bodies;
+            # pop it out before the scalar-meta pass so it isn't coerced into a
+            # rank_math_schemas string. See issue #24.
+            schemas = rankmath_meta.pop('schemas', None)
             # Reconcile rank_math_description to the excerpt so an excerpt change
             # can't leave a stale SEO description live (issue #13). An explicit
             # rankmath.description always wins; an empty/absent excerpt leaves
@@ -826,6 +830,12 @@ class WordPressPost:
                 rankmath_meta['description'] = excerpt
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
+            # Schema write. Absent (None) or empty ({}) = no-op; populated dict
+            # is written per-type via updateMeta. Failures do not fail the
+            # publish; they surface through result['schema_failure'].
+            schema_failure = None
+            if schemas:
+                schema_failure = self.update_rankmath_schemas(post_id, schemas, verbose=verbose)
 
             # Writeback id/slug (new posts only). Mirror the routing gate
             # above: a bare `id:` (== None) is a "new post" from routing's
@@ -850,6 +860,9 @@ class WordPressPost:
             # separately so they aren't masked as a clean success (issue #11).
             if msls_failures:
                 result['msls_failures'] = msls_failures
+            # Same reasoning for schema-write failures (issue #24).
+            if schema_failure:
+                result['schema_failure'] = schema_failure
             return result
         else:
             error_msg = response.text
