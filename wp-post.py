@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+import phpserialize
 import requests
 import yaml
 
@@ -910,6 +911,62 @@ class WordPressPost:
                 print(f"⚠ Rank Math meta update failed: {resp.status_code} - {resp.text}")
         except requests.RequestException as e:
             print(f"⚠ Rank Math meta update error: {e}")
+
+    def update_rankmath_schemas(self, post_id, schemas, verbose=False):
+        """Write PHP-serialised rank_math_schema_<Type> meta via Rank Math updateMeta.
+
+        Each key in `schemas` becomes a `rank_math_schema_<key>` post_meta row,
+        with the value PHP-serialised so Rank Math's schema module reads it back
+        into JSON-LD on render. Uses update_post_meta upsert semantics: an
+        existing row for the same type is replaced. Types not listed in `schemas`
+        are left alone; there is no delete-orphan pass (no REST route enumerates
+        existing schema meta_ids). See issue #24.
+
+        Args:
+            post_id: WordPress post ID.
+            schemas: {Type: dict} mapping. Empty dict is a no-op.
+
+        Returns:
+            None on success or when schemas is empty.
+            On HTTP failure: {"status_code": int, "error": str, "types": [str]}.
+            On request exception: {"error": str, "types": [str]}.
+        """
+        if not schemas:
+            return None
+
+        meta = {
+            f"rank_math_schema_{type_name}": phpserialize.dumps(schema_body).decode("utf-8")
+            for type_name, schema_body in schemas.items()
+        }
+        payload = {
+            "objectType": "post",
+            "objectID": post_id,
+            "meta": meta,
+        }
+        url = f"{self.site_url}/wp-json/rankmath/v1/updateMeta"
+
+        if verbose:
+            print(f"[verbose] Rank Math schemas: POST {url}")
+            print(f"[verbose] Types: {sorted(schemas.keys())}")
+
+        types = sorted(schemas.keys())
+        try:
+            resp = requests.post(url, auth=self.auth, json=payload, timeout=15)
+            if resp.status_code == 200:
+                print(f"✓ Rank Math schemas written: {', '.join(types)}")
+                return None
+            print(
+                f"⚠ Rank Math schema write failed: {resp.status_code} - {resp.text}",
+                file=sys.stderr,
+            )
+            return {
+                "status_code": resp.status_code,
+                "error": resp.text,
+                "types": types,
+            }
+        except requests.RequestException as e:
+            print(f"⚠ Rank Math schema write error: {e}", file=sys.stderr)
+            return {"error": str(e), "types": types}
 
     def _article_scope_for(self, filepath):
         """Derive a stable, per-article scope from a markdown filepath.

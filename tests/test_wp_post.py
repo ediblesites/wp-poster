@@ -3218,3 +3218,69 @@ class TestPhpSerialize:
         serialised = phpserialize.dumps(data).decode("utf-8")
         loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
         assert loaded == data
+
+
+class TestUpdateRankmathSchemas:
+    """Direct tests for the update_rankmath_schemas method (issue #24)."""
+
+    @patch("wp_post.requests.post")
+    def test_empty_dict_no_request(self, mock_post, wp):
+        result = wp.update_rankmath_schemas(1, {})
+        mock_post.assert_not_called()
+        assert result is None
+
+    @patch("wp_post.requests.post")
+    def test_single_schema_written(self, mock_post, wp, mock_response):
+        import phpserialize
+        mock_post.return_value = mock_response(200)
+        schema = {"@type": "HowTo", "name": "Test"}
+        result = wp.update_rankmath_schemas(1, {"HowTo": schema})
+        assert result is None
+        assert mock_post.call_count == 1
+        url = mock_post.call_args[0][0]
+        assert url.endswith("/wp-json/rankmath/v1/updateMeta")
+        payload = mock_post.call_args[1]["json"]
+        assert payload["objectType"] == "post"
+        assert payload["objectID"] == 1
+        expected = phpserialize.dumps(schema).decode("utf-8")
+        assert payload["meta"]["rank_math_schema_HowTo"] == expected
+
+    @patch("wp_post.requests.post")
+    def test_multiple_schemas_one_post(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(200)
+        result = wp.update_rankmath_schemas(1, {
+            "HowTo": {"@type": "HowTo"},
+            "Recipe": {"@type": "Recipe"},
+        })
+        assert result is None
+        assert mock_post.call_count == 1
+        payload = mock_post.call_args[1]["json"]
+        assert "rank_math_schema_HowTo" in payload["meta"]
+        assert "rank_math_schema_Recipe" in payload["meta"]
+
+    @patch("wp_post.requests.post")
+    def test_type_key_case_preserved(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(200)
+        wp.update_rankmath_schemas(1, {"HowTo": {"@type": "HowTo"}})
+        payload = mock_post.call_args[1]["json"]
+        assert "rank_math_schema_HowTo" in payload["meta"]
+        assert "rank_math_schema_howto" not in payload["meta"]
+
+    @patch("wp_post.requests.post")
+    def test_http_failure_returns_failure_dict(self, mock_post, wp, mock_response):
+        mock_post.return_value = mock_response(400, text="Bad Request")
+        result = wp.update_rankmath_schemas(1, {"HowTo": {"@type": "HowTo"}})
+        assert result is not None
+        assert result["status_code"] == 400
+        assert "Bad Request" in result["error"]
+        assert result["types"] == ["HowTo"]
+
+    @patch("wp_post.requests.post")
+    def test_exception_returns_failure_dict(self, mock_post, wp):
+        import requests as _requests
+        mock_post.side_effect = _requests.RequestException("boom")
+        result = wp.update_rankmath_schemas(1, {"HowTo": {"@type": "HowTo"}})
+        assert result is not None
+        assert "boom" in result["error"]
+        assert result["types"] == ["HowTo"]
+        assert "status_code" not in result
