@@ -3182,7 +3182,14 @@ class TestPhpSerialize:
         loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
         assert loaded == data
 
-    def test_nested_list_and_dict(self):
+    def test_nested_list_serialises_as_php_indexed_array(self):
+        # PHP has no distinct list type; Python lists serialise as PHP arrays
+        # with integer keys 0..N-1. This is what Rank Math's unserialize() will
+        # decode back into an indexed PHP array on the server side - exactly
+        # what HowTo's `step` field expects. The Python round-trip via
+        # phpserialize.loads returns those as numeric-keyed dicts (there is no
+        # ambiguity in the serialised form to distinguish list from dict), so
+        # we pin on the serialised string plus the round-tripped dict shape.
         import phpserialize
         data = {
             "@type": "HowTo",
@@ -3192,8 +3199,18 @@ class TestPhpSerialize:
             ],
         }
         serialised = phpserialize.dumps(data).decode("utf-8")
+        # step is an a:2 array with i:0 / i:1 numeric keys - indexed, not hash.
+        assert 'a:2:{s:5:"@type";s:5:"HowTo";s:4:"step";a:2:{i:0;' in serialised
+        assert '"First"' in serialised
+        assert '"Second"' in serialised
         loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
-        assert loaded == data
+        assert loaded == {
+            "@type": "HowTo",
+            "step": {
+                0: {"@type": "HowToStep", "text": "First"},
+                1: {"@type": "HowToStep", "text": "Second"},
+            },
+        }
 
     def test_unicode_survives(self):
         import phpserialize
