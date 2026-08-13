@@ -3169,3 +3169,35 @@ class TestTestModeLocale:
                 wp_post.main()
         assert exc.value.code == 0
         assert "Warning</strong>" in capsys.readouterr().out
+
+
+class TestPhpSerialize:
+    """Pins the phpserialize contract wp-post relies on for schema meta."""
+
+    def test_dict_round_trip(self):
+        import phpserialize
+        data = {"@type": "HowTo", "name": "Test"}
+        serialised = phpserialize.dumps(data).decode("utf-8")
+        assert serialised.startswith("a:2:")
+        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
+        assert loaded == data
+
+    def test_nested_list_and_dict(self):
+        import phpserialize
+        data = {
+            "@type": "HowTo",
+            "step": [
+                {"@type": "HowToStep", "text": "First"},
+                {"@type": "HowToStep", "text": "Second"},
+            ],
+        }
+        serialised = phpserialize.dumps(data).decode("utf-8")
+        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
+        assert loaded == data
+
+    def test_unicode_survives(self):
+        import phpserialize
+        data = {"description": "So senden Sie ein PDF per Fax."}
+        serialised = phpserialize.dumps(data).decode("utf-8")
+        loaded = phpserialize.loads(serialised.encode("utf-8"), decode_strings=True)
+        assert loaded == data
