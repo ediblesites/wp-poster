@@ -20,7 +20,6 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-import phpserialize
 import requests
 import yaml
 
@@ -813,8 +812,8 @@ class WordPressPost:
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))
-            # rankmath.schemas is a nested dict of PHP-serialised schema bodies
-            # handled by update_rankmath_schemas below, not by update_rankmath_meta.
+            # rankmath.schemas is a nested dict of schema bodies handled by
+            # update_rankmath_schemas below, not by update_rankmath_meta.
             # Pop it out so (a) the schema value routes to the correct writer and
             # (b) an otherwise-empty rankmath block doesn't trigger a scalar-meta
             # update just because 'schemas' was present. See issue #24.
@@ -945,14 +944,23 @@ class WordPressPost:
             print(f"⚠ Rank Math meta update error: {e}")
 
     def update_rankmath_schemas(self, post_id, schemas, verbose=False):
-        """Write PHP-serialised rank_math_schema_<Type> meta via Rank Math updateMeta.
+        """Write rank_math_schema_<Type> meta via Rank Math updateMeta.
 
-        Each key in `schemas` becomes a `rank_math_schema_<key>` post_meta row,
-        with the value PHP-serialised so Rank Math's schema module reads it back
+        Each key in `schemas` becomes a `rank_math_schema_<key>` post_meta row
+        holding the schema body, which Rank Math's schema module reads back
         into JSON-LD on render. Uses update_post_meta upsert semantics: an
         existing row for the same type is replaced. Types not listed in `schemas`
         are left alone; there is no delete-orphan pass (no REST route enumerates
         existing schema meta_ids). See issue #24.
+
+        The schema body is sent as a native JSON object (nested dict). The WP
+        REST layer decodes it into a PHP associative array, Rank Math calls
+        update_post_meta with the array, and WP's maybe_serialize single-
+        serialises it into wp_postmeta. Pre-PHP-serialising it in Python
+        instead would trigger maybe_serialize's is_serialized() safety wrap
+        (WP core intentionally double-serialises pre-serialised strings, see
+        core.trac 12930), storing corrupted data that fatals Rank Math on
+        render.
 
         Args:
             post_id: WordPress post ID.
@@ -961,25 +969,15 @@ class WordPressPost:
         Returns:
             None on success or when schemas is empty.
             On HTTP failure: {"status_code": int, "error": str, "types": [str]}.
-            On request exception: {"error": str, "types": [str]}.
-            On serialisation failure: {"error": str, "types": [str]}.
+            On request exception or JSON-encoding failure of the payload:
+                {"error": str, "types": [str]}.
         """
         if not schemas:
             return None
 
         types = sorted(schemas.keys())
-        try:
-            meta = {
-                f"rank_math_schema_{type_name}": phpserialize.dumps(schema_body).decode("utf-8")
-                for type_name, schema_body in schemas.items()
-            }
-        except Exception as e:
-            # Most likely a value phpserialize can't handle (datetime autoparsed
-            # by YAML, nested tuple, etc.). Surface as schema_failure so the
-            # publish still succeeds cleanly instead of raising a traceback.
-            print(f"⚠ Rank Math schema serialisation error: {e}", file=sys.stderr)
-            return {"error": f"serialisation: {e}", "types": types}
-
+        meta = {f"rank_math_schema_{type_name}": schema_body
+                for type_name, schema_body in schemas.items()}
         payload = {
             "objectType": "post",
             "objectID": post_id,
@@ -992,6 +990,11 @@ class WordPressPost:
             print(f"[verbose] Types: {types}")
 
         try:
+            # requests JSON-encodes `payload` before the network call. An
+            # unencodable schema value (a set, a datetime that YAML autoparsed
+            # from a date-like string) raises TypeError from json.dumps inside
+            # requests, which is not a RequestException; catch both so a bad
+            # value surfaces as schema_failure rather than a traceback.
             resp = requests.post(url, auth=self.auth, json=payload, timeout=15)
             if resp.status_code == 200:
                 print(f"✓ Rank Math schemas written: {', '.join(types)}")
@@ -1005,7 +1008,7 @@ class WordPressPost:
                 "error": resp.text,
                 "types": types,
             }
-        except requests.RequestException as e:
+        except (requests.RequestException, TypeError, ValueError) as e:
             print(f"⚠ Rank Math schema write error: {e}", file=sys.stderr)
             return {"error": str(e), "types": types}
 
@@ -2245,7 +2248,7 @@ frontmatter fields:
                     title, description, focus_keyword
                   Full rank_math_* keys also accepted.
                   rankmath.schemas: {Type: {...}} writes each schema body
-                  as rank_math_schema_<Type> (PHP-serialised) for JSON-LD
+                  as a rank_math_schema_<Type> post_meta row for JSON-LD
                   rich snippets (HowTo, Recipe, Product, etc.). Upsert per
                   type; types not listed are left alone. Legacy
                   rich_snippet / snippet_howto_* keys are warned and dropped.
