@@ -124,10 +124,17 @@ def _wp_image_block(url, alt, title=None, media_id=None):
     else:
         caption = ""
 
+    # alt arrives already escaped for &, <, > but not quotes - text() leaves
+    # quotes alone so WordPress shortcodes carrying quoted attributes survive
+    # elsewhere in the body. Here alt lands inside an HTML attribute, where an
+    # unescaped quote would close it early, so it gets escaped at this one
+    # point of use instead of in text() itself.
+    alt_attr = (alt or "").replace('"', '&quot;')
+
     return (
         f"<!-- wp:image {{{attrs}}} -->\n"
         f'<figure class="wp-block-image aligncenter size-full">'
-        f'<img src="{url}" alt="{alt}"{cls}/>'
+        f'<img src="{url}" alt="{alt_attr}"{cls}/>'
         f"{caption}</figure>\n"
         f"<!-- /wp:image -->"
     )

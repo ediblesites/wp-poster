@@ -308,6 +308,14 @@ class TestImages:
         assert 'src="https://img.example.com/pic.jpg"' in result
         assert 'alt="alt text"' in result
 
+    def test_alt_text_quote_is_escaped(self, converter):
+        # A literal quote in alt text must not close the attribute early.
+        # text() itself leaves quotes alone (WordPress shortcodes need that),
+        # so the escaping happens where the alt attribute is built instead.
+        result = converter.convert('![Say "hi" to the cat](https://img.example.com/pic.jpg)')
+        assert 'alt="Say &quot;hi&quot; to the cat"' in result
+        assert '<img src="https://img.example.com/pic.jpg" alt="Say &quot;hi&quot; to the cat"/>' in result
+
     def test_image_with_media_id(self):
         c = GutenbergConverter(image_handler=lambda url: (url, 42))
         result = c.convert("![photo](https://img.example.com/pic.jpg)")
