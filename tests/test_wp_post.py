@@ -42,6 +42,87 @@ def _msls_eval_echo(returncode=0):
 
 
 # ===========================================================================
+# HTTP retry on transient failures (h2gr parity audit 3.3)
+# ===========================================================================
+#
+# _request_with_retry wraps a single requests.<method> call and is what the
+# WP API call sites (post create/update, find_existing_media,
+# resolve_local_attachment, upload_media_from_file) go through instead of
+# calling requests.get/post directly. A 429/502/503/504, a connection error
+# or a timeout is retried up to _HTTP_MAX_ATTEMPTS times with a growing pause
+# between attempts. Anything else - including a 4xx - returns on the first
+# attempt: a bad credential or a missing resource will not start working on
+# a retry, so retrying it would only turn a clear error into a slow one.
+
+class TestHttpRetry:
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.get")
+    def test_502_then_success(self, mock_get, mock_sleep):
+        failed = MagicMock(status_code=502)
+        ok = MagicMock(status_code=200)
+        mock_get.side_effect = [failed, ok]
+
+        response = wp_post._request_with_retry("get", "https://example.com/x")
+
+        assert response.status_code == 200
+        assert mock_get.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.get")
+    def test_exhausts_after_last_attempt_returns_last_response(self, mock_get, mock_sleep):
+        mock_get.return_value = MagicMock(status_code=503)
+
+        response = wp_post._request_with_retry("get", "https://example.com/x")
+
+        assert response.status_code == 503
+        assert mock_get.call_count == 3
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.get")
+    def test_404_fails_immediately(self, mock_get, mock_sleep):
+        mock_get.return_value = MagicMock(status_code=404)
+
+        response = wp_post._request_with_retry("get", "https://example.com/x")
+
+        assert response.status_code == 404
+        assert mock_get.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.post")
+    def test_401_fails_immediately(self, mock_post, mock_sleep):
+        mock_post.return_value = MagicMock(status_code=401)
+
+        response = wp_post._request_with_retry("post", "https://example.com/x")
+
+        assert response.status_code == 401
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.get")
+    def test_connection_error_retried_then_succeeds(self, mock_get, mock_sleep):
+        ok = MagicMock(status_code=200)
+        mock_get.side_effect = [requests.ConnectionError("dropped"), ok]
+
+        response = wp_post._request_with_retry("get", "https://example.com/x")
+
+        assert response.status_code == 200
+        assert mock_get.call_count == 2
+
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.get")
+    def test_timeout_exhausts_and_raises(self, mock_get, mock_sleep):
+        mock_get.side_effect = requests.Timeout("too slow")
+
+        with pytest.raises(requests.Timeout):
+            wp_post._request_with_retry("get", "https://example.com/x")
+
+        assert mock_get.call_count == 3
+
+
+# ===========================================================================
 # 1. Missing title validation  (highest priority)
 # ===========================================================================
 

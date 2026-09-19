@@ -101,6 +101,46 @@ def normalize_post_date(value, warn=None):
     return value
 
 
+# WP API calls are retried on a transient failure (a 502 from an overloaded
+# host, a dropped connection) so one blip does not fail the whole publish.
+# _HTTP_BACKOFF[attempt-1] seconds are slept before each retry, the same
+# growing-pause shape as _MSLS_BACKOFF above. A 429/502/503/504 status, a
+# connection error, or a timeout is retried; anything else - including a
+# 4xx - is not: a bad credential or a missing resource will not start
+# working on a retry, so retrying it would only turn a clear error into a
+# slow one.
+_HTTP_MAX_ATTEMPTS = 3
+_HTTP_BACKOFF = [2, 4]
+_HTTP_RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+
+
+def _request_with_retry(method, *args, **kwargs):
+    """Call requests.<method>(*args, **kwargs), retrying transient failures.
+
+    Used for calls to the WordPress REST API instead of calling requests.get
+    or requests.post directly, so a single publish survives a transient
+    error from the host without failing outright. Not for the whole
+    wp-post invocation: retrying that at a higher level is safe for an
+    article that already has an id, but for a new post a retry after a lost
+    response would create a second post, because the id is not written back
+    until the call returns.
+    """
+    call = getattr(requests, method)
+    response = None
+    for attempt in range(_HTTP_MAX_ATTEMPTS):
+        if attempt > 0:
+            time.sleep(_HTTP_BACKOFF[attempt - 1])
+        try:
+            response = call(*args, **kwargs)
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == _HTTP_MAX_ATTEMPTS - 1:
+                raise
+            continue
+        if response.status_code not in _HTTP_RETRYABLE_STATUS_CODES:
+            return response
+    return response
+
+
 class WordPressPost:
     def __init__(self, site_url, username, app_password,
                  callout_config=None, resolve_bookmarks=True, locale=None):
@@ -795,13 +835,13 @@ class WordPressPost:
             url = f"{self.api_url}/{api_endpoint}/{frontmatter['id']}"
             if verbose:
                 print(f"[verbose] Updating post: POST {url}")
-            response = requests.post(url, auth=self.auth, json=post_data, timeout=30)
+            response = _request_with_retry('post', url, auth=self.auth, json=post_data, timeout=30)
         else:
             # Create new post
             url = f"{self.api_url}/{api_endpoint}"
             if verbose:
                 print(f"[verbose] Creating post: POST {url}")
-            response = requests.post(url, auth=self.auth, json=post_data, timeout=30)
+            response = _request_with_retry('post', url, auth=self.auth, json=post_data, timeout=30)
 
         if verbose:
             print(f"[verbose] Response: {response.status_code}")
@@ -1058,7 +1098,8 @@ class WordPressPost:
         if not slug_base:
             return None
         try:
-            response = requests.get(
+            response = _request_with_retry(
+                'get',
                 f"{self.api_url}/media",
                 auth=self.auth,
                 params={'slug': slug_base, 'per_page': 10},
@@ -1098,7 +1139,8 @@ class WordPressPost:
         if not slug_base:
             return None
         try:
-            response = requests.get(
+            response = _request_with_retry(
+                'get',
                 f"{self.api_url}/media",
                 auth=self.auth,
                 params={'slug': slug_base, 'per_page': 10},
@@ -1306,14 +1348,15 @@ class WordPressPost:
         
         print(f"Uploading featured image: {filename}")
 
-        response = requests.post(
+        response = _request_with_retry(
+            'post',
             f"{self.api_url}/media",
             auth=self.auth,
             headers=headers,
             data=media_data,
             timeout=60
         )
-        
+
         if response.status_code == 201:
             media_info = response.json()
             print(f"✓ Featured image uploaded successfully: {media_info['source_url']}")
