@@ -3829,3 +3829,38 @@ class TestFeaturedImageByConvention:
 
     def test_nothing_is_found_without_an_article_dir(self):
         assert self._poster().conventional_featured_image() is None
+
+
+# ===========================================================================
+# Which frontmatter key holds the post id
+# ===========================================================================
+#
+# Most sites use `id`. A site with its own history can say otherwise in config
+# rather than rewriting every article. Getting this wrong is expensive: an
+# article whose id cannot be found reads as a new post, so a republish creates
+# a duplicate instead of updating.
+
+
+class TestConfigurablePostIdKey:
+    def _poster(self, id_key=None):
+        poster = WordPressPost.__new__(WordPressPost)
+        poster.id_key = id_key or 'id'
+        return poster
+
+    def test_the_default_key_is_id(self):
+        assert self._poster().existing_post_id({"id": 42}) == 42
+
+    def test_a_configured_key_is_used_instead(self):
+        assert self._poster("postId").existing_post_id({"postId": 42}) == 42
+
+    def test_the_default_key_is_ignored_when_another_is_configured(self):
+        assert self._poster("postId").existing_post_id({"id": 42}) is None
+
+    def test_a_missing_key_reads_as_a_new_post(self):
+        assert self._poster("postId").existing_post_id({"title": "x"}) is None
+
+    def test_a_null_value_reads_as_a_new_post(self):
+        assert self._poster("postId").existing_post_id({"postId": None}) is None
+
+    def test_no_frontmatter_at_all_reads_as_a_new_post(self):
+        assert self._poster().existing_post_id(None) is None

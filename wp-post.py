@@ -147,6 +147,10 @@ class WordPressPost:
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
+        # Which frontmatter key holds this site's WordPress post id. Most
+        # sites use `id`; a site with its own history can say otherwise in
+        # config rather than rewriting every article.
+        self.id_key = 'id'
         self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
         self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
         self._callout_config = callout_config
@@ -162,6 +166,10 @@ class WordPressPost:
 
     def parse_markdown_file(self, filepath):
         """Parse markdown file with frontmatter and convert to Gutenberg blocks"""
+        # Remember where this article lives so a relative image path can be
+        # resolved against it. Set here rather than only in post_to_wordpress
+        # so --test previews resolve images the same way a real publish does.
+        self._current_article_dir = os.path.dirname(os.path.abspath(filepath)) if filepath else None
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
 
@@ -415,6 +423,14 @@ class WordPressPost:
 
         return frontmatter, raw_content
 
+    def existing_post_id(self, frontmatter):
+        """The WordPress post id this article already has, or None.
+
+        Reads the key this site configured. A bare key with a null value counts
+        as absent, which is how a placeholder `id:` line behaves.
+        """
+        return (frontmatter or {}).get(self.id_key)
+
     FEATURED_BY_CONVENTION = 'featured.webp'
 
     def conventional_featured_image(self):
@@ -625,7 +641,7 @@ class WordPressPost:
             return
 
         fm = load_frontmatter(parts[1]) or {}
-        fm['id'] = post_id
+        fm[self.id_key] = post_id
 
         # Extract slug from URL: last non-empty path segment
         url_path = post_url.rstrip('/').split('/')
@@ -869,9 +885,9 @@ class WordPressPost:
         # A bare `id:` in frontmatter loads as None; treat that as absent so
         # we don't POST to /{endpoint}/None and 404. Only a truthy id routes
         # to the update branch.
-        if frontmatter.get('id'):
+        if self.existing_post_id(frontmatter):
             # Update existing post
-            url = f"{self.api_url}/{api_endpoint}/{frontmatter['id']}"
+            url = f"{self.api_url}/{api_endpoint}/{self.existing_post_id(frontmatter)}"
             if verbose:
                 print(f"[verbose] Updating post: POST {url}")
             response = _request_with_retry('post', url, auth=self.auth, json=post_data, timeout=30)
@@ -947,7 +963,7 @@ class WordPressPost:
             # Writeback id/slug (new posts only). Mirror the routing gate
             # above: a bare `id:` (== None) is a "new post" from routing's
             # perspective, so it needs writeback too.
-            if not frontmatter.get('id'):
+            if not self.existing_post_id(frontmatter):
                 self._writeback_frontmatter(filepath, post_id, post['link'])
 
             # MSLS translation linking runs on every publish (create + update)
@@ -1875,7 +1891,7 @@ def resolve_purge_targets(scope, value, config, project_root=None, config_path=N
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
         raise PurgeConfigError(f"Could not read frontmatter from {value}: {e}")
 
-    post_id = frontmatter.get('id')
+    post_id = frontmatter.get('id') or frontmatter.get('postId')
     if not post_id:
         raise PurgeConfigError(
             f"{value} has no post id in its frontmatter, so it has not been "
@@ -2707,6 +2723,8 @@ def main():
         callout_config=config.get('callouts'),
         locale=resolve_locale_for_file(args.file)
     )
+    if config.get('id_key'):
+        poster.id_key = config['id_key']
 
     # Resolve format: CLI > frontmatter > config > default
     frontmatter_peek = poster.parse_frontmatter_only(args.file)
