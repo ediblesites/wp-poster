@@ -32,7 +32,7 @@ requests.delete = _session.delete
 from datetime import date, datetime
 import getpass
 
-from gutenberg import GutenbergConverter
+from gutenberg import DEFAULT_IMAGE_ALIGN, GutenbergConverter
 
 
 def normalize_yaml_dates(value):
@@ -151,6 +151,10 @@ class WordPressPost:
         # sites use `id`; a site with its own history can say otherwise in
         # config rather than rewriting every article.
         self.id_key = 'id'
+        # Block alignment for images. Center is what every site using this
+        # tool has had; a site whose theme already places images the way it
+        # wants sets image_align to null and gets an unaligned block.
+        self.image_align = DEFAULT_IMAGE_ALIGN
         self._media_source_cache = {}  # source path/URL -> (media_id, wp_source_url)
         self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
         self._callout_config = callout_config
@@ -199,6 +203,7 @@ class WordPressPost:
             callout_config=self._callout_config,
             bookmark_resolver=self._resolve_bookmark if self._resolve_bookmarks else None,
             locale=self._locale,
+            image_align=self.image_align,
         )
         blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 
@@ -2725,6 +2730,8 @@ def main():
     )
     if config.get('id_key'):
         poster.id_key = config['id_key']
+    if 'image_align' in config:
+        poster.image_align = config['image_align']
 
     # Resolve format: CLI > frontmatter > config > default
     frontmatter_peek = poster.parse_frontmatter_only(args.file)

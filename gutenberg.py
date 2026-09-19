@@ -117,9 +117,20 @@ def _extract_raw_gutenberg(text, line_offset=0):
     return "\n".join(out_lines), blocks
 
 
-def _wp_image_block(url, alt, title=None, media_id=None):
-    """Build a wp:image Gutenberg block string."""
-    attrs = '"sizeSlug":"full","linkDestination":"none","align":"center"'
+DEFAULT_IMAGE_ALIGN = "center"
+
+
+def _wp_image_block(url, alt, title=None, media_id=None, align=DEFAULT_IMAGE_ALIGN):
+    """Build a wp:image Gutenberg block string.
+
+    `align` is the block's alignment. It defaults to center, which is what
+    every site using this tool has had. A site whose theme already places
+    images the way it wants can pass None and get an unaligned block, which is
+    what the WordPress editor produces when you do not choose an alignment.
+    """
+    attrs = '"sizeSlug":"full","linkDestination":"none"'
+    if align:
+        attrs += f',"align":"{align}"'
     if media_id:
         attrs = f'"id":{media_id},{attrs}'
 
@@ -137,9 +148,11 @@ def _wp_image_block(url, alt, title=None, media_id=None):
     # point of use instead of in text() itself.
     alt_attr = (alt or "").replace('"', '&quot;')
 
+    align_cls = f" align{align}" if align else ""
+
     return (
         f"<!-- wp:image {{{attrs}}} -->\n"
-        f'<figure class="wp-block-image aligncenter size-full">'
+        f'<figure class="wp-block-image{align_cls} size-full">'
         f'<img src="{url}" alt="{alt_attr}"{cls}/>'
         f"{caption}</figure>\n"
         f"<!-- /wp:image -->"
@@ -235,9 +248,10 @@ class GutenbergRenderer(mistune.HTMLRenderer):
 
     NAME = "html"
 
-    def __init__(self, image_handler=None):
+    def __init__(self, image_handler=None, image_align=DEFAULT_IMAGE_ALIGN):
         super().__init__()
         self.image_handler = image_handler or (lambda url: (url, None))
+        self.image_align = image_align
         self._videos = []
 
     # ------------------------------------------------------------------
@@ -343,7 +357,8 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         final_url, media_id = self.image_handler(url)
         if not final_url:
             return ""
-        block = _wp_image_block(final_url, text, title=title, media_id=media_id)
+        block = _wp_image_block(final_url, text, title=title, media_id=media_id,
+                                align=self.image_align)
         return f"{_IMAGE_SENTINEL}{block}{_IMAGE_SENTINEL}"
 
     def _video_block(self, index):
@@ -394,6 +409,7 @@ class GutenbergRenderer(mistune.HTMLRenderer):
             return _wp_image_block(
                 final_url, alt.group(1) if alt else "",
                 title=caption_clean or None, media_id=media_id,
+                align=self.image_align,
             )
 
         text = re.sub(figure_pattern, _replace_figure, text, flags=re.DOTALL | re.IGNORECASE)
@@ -412,6 +428,7 @@ class GutenbergRenderer(mistune.HTMLRenderer):
             return _wp_image_block(
                 final_url, alt.group(1) if alt else "",
                 media_id=media_id,
+                align=self.image_align,
             )
 
         if '<!-- wp:image' not in text:
@@ -450,7 +467,8 @@ class GutenbergConverter:
     """Converts markdown to WordPress Gutenberg blocks."""
 
     def __init__(self, image_handler=None, callout_config=None,
-                 bookmark_resolver=None, locale=None):
+                 bookmark_resolver=None, locale=None,
+                 image_align=DEFAULT_IMAGE_ALIGN):
         """
         Initialize converter.
 
@@ -464,7 +482,8 @@ class GutenbergConverter:
             locale: Optional WordPress locale ("de_DE", "ja") selecting the
                           callout label language. None means English.
         """
-        self._renderer = GutenbergRenderer(image_handler=image_handler)
+        self._renderer = GutenbergRenderer(image_handler=image_handler,
+                                           image_align=image_align)
 
         self._md = mistune.Markdown(
             renderer=self._renderer,

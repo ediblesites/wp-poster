@@ -581,3 +581,34 @@ class TestEmbeddedGutenberg:
         assert "wp:code" in result
         assert "&lt;!-- wp:cover --&gt;" in result
         assert "<!-- wp:cover -->" not in result
+
+
+class TestConfigurableImageAlign:
+    """A site whose theme already places images can opt out of the alignment.
+
+    Center is what every site using this tool has had, so it stays the
+    default. h2gr's own publisher emitted no alignment, and forcing one on 415
+    live articles would be a visible change nobody asked for.
+    """
+
+    def test_center_is_the_default(self):
+        out = GutenbergConverter().convert("![a cat](https://x/a.jpg)")
+        assert '"align":"center"' in out
+        assert "wp-block-image aligncenter size-full" in out
+
+    def test_none_produces_an_unaligned_block(self):
+        out = GutenbergConverter(image_align=None).convert("![a cat](https://x/a.jpg)")
+        assert '"align"' not in out
+        assert "aligncenter" not in out
+        assert 'class="wp-block-image size-full"' in out
+
+    def test_another_alignment_is_honoured(self):
+        out = GutenbergConverter(image_align="wide").convert("![a cat](https://x/a.jpg)")
+        assert '"align":"wide"' in out
+        assert "wp-block-image alignwide size-full" in out
+
+    def test_the_image_is_otherwise_unchanged(self):
+        aligned = GutenbergConverter().convert("![a cat](https://x/a.jpg)")
+        plain = GutenbergConverter(image_align=None).convert("![a cat](https://x/a.jpg)")
+        assert 'alt="a cat"' in aligned and 'alt="a cat"' in plain
+        assert '"sizeSlug":"full"' in aligned and '"sizeSlug":"full"' in plain
