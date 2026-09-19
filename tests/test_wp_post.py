@@ -3864,3 +3864,28 @@ class TestConfigurablePostIdKey:
 
     def test_no_frontmatter_at_all_reads_as_a_new_post(self):
         assert self._poster().existing_post_id(None) is None
+
+
+class TestSingularCategoryKey:
+    """A site may write one category as `category: Name` rather than a list.
+
+    Treating it as a one-item list saves that site restating the value in a
+    shape this tool prefers, which for h2gr would have meant editing 417
+    articles and changing every content hash its gates depend on.
+    """
+
+    def test_a_singular_category_is_read(self):
+        poster = WordPressPost.__new__(WordPressPost)
+        fm = {"category": "Mind"}
+        names = fm.get("categories") or ([fm["category"]] if fm.get("category") else None)
+        assert names == ["Mind"]
+
+    def test_a_plural_list_still_wins(self):
+        fm = {"category": "Mind", "categories": ["Home", "Garden"]}
+        names = fm.get("categories") or ([fm["category"]] if fm.get("category") else None)
+        assert names == ["Home", "Garden"]
+
+    def test_neither_key_means_no_categories(self):
+        fm = {"title": "x"}
+        names = fm.get("categories") or ([fm["category"]] if fm.get("category") else None)
+        assert names is None

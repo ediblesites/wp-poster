@@ -809,10 +809,16 @@ class WordPressPost:
                 print(f"⚠ Author '{author}' not found, using authenticated user")
 
         # Handle categories (only for posts)
-        if 'categories' in frontmatter and api_endpoint == 'posts':
+        # A site may write one category as a singular `category:` string.
+        # Treat that as a one-item list rather than making it restate the
+        # value in a shape this tool prefers.
+        category_names = frontmatter.get('categories')
+        if not category_names and frontmatter.get('category'):
+            category_names = [frontmatter['category']]
+        if category_names and api_endpoint == 'posts':
             existing_cats = self.get_categories()
             cat_ids = []
-            for cat_name in frontmatter['categories']:
+            for cat_name in category_names:
                 if cat_name in existing_cats:
                     cat_ids.append(existing_cats[cat_name])
                 else:
