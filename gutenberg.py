@@ -3,6 +3,12 @@ Markdown to Gutenberg block converter.
 
 Uses mistune for CommonMark-compliant parsing with a custom renderer
 that emits WordPress Gutenberg block markup.
+
+A markdown image is normally a wp:image block, but a link to YouTube is the
+one exception: written alone in its own paragraph, it becomes a core/embed
+block instead, with the image's alt text carried over as the caption. See
+YOUTUBE_HOSTS and embed_block() below for the accepted URL shapes and the
+block markup this produces.
 """
 
 import json
