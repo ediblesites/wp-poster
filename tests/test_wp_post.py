@@ -1732,6 +1732,152 @@ class TestImageDedup:
 
 
 # ===========================================================================
+# Freshness check on a reused scoped attachment (h2gr parity audit 3.2)
+# ===========================================================================
+#
+# A same-named attachment can hold stale bytes: generate_images-style tools
+# regenerate <slug>-body-1.webp etc. in place under an unchanged filename.
+# find_existing_media compares the candidate's media_details.filesize against
+# the local file's size; on a mismatch it force-deletes that one attachment
+# (already identified by the exact slug= query and the exact filename match)
+# so the upload that follows takes the name back.
+
+class TestImageFreshness:
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_stale_size_deletes_and_reuploads(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    ):
+        """A same-name attachment whose remote size differs from the local
+        file is stale: it is force-deleted and the new bytes are uploaded
+        under the same name."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "body-1.webp"
+        img.write_bytes(b"new-bytes-different-length-than-999")
+        mock_get.return_value = mock_response(200, [
+            {"id": 50, "slug": "my-article-body-1",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-body-1.webp",
+             "media_details": {"filesize": 999}},
+        ])
+        mock_delete.return_value = mock_response(200, {"deleted": True})
+        mock_post.return_value = mock_response(201, {
+            "id": 51,
+            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-body-1.webp",
+        })
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 51
+        mock_delete.assert_called_once()
+        args, kwargs = mock_delete.call_args
+        assert args[0] == "https://example.com/wp-json/wp/v2/media/50"
+        assert kwargs.get("params") == {"force": True}
+        mock_post.assert_called_once()
+
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_stale_size_delete_only_touches_exact_filename_match(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    ):
+        """The slug query can return an extension mismatch alongside the exact
+        match (same sanitized slug, different file type). Only the exact
+        filename match may be deleted."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"x" * 500)
+        mock_get.return_value = mock_response(200, [
+            {"id": 7, "slug": "my-article-hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.png",
+             "media_details": {"filesize": 999}},
+            {"id": 50, "slug": "my-article-hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
+             "media_details": {"filesize": 999}},
+        ])
+        mock_delete.return_value = mock_response(200, {"deleted": True})
+        mock_post.return_value = mock_response(201, {
+            "id": 51,
+            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
+        })
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 51
+        mock_delete.assert_called_once()
+        assert mock_delete.call_args[0][0] == "https://example.com/wp-json/wp/v2/media/50"
+
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_matching_size_reuses_without_delete(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    ):
+        """Remote size equals the local file's size: reuse it, delete nothing,
+        upload nothing."""
+        wp._current_article_scope = "my-article"
+        content = b"same-bytes"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(content)
+        mock_get.return_value = mock_response(200, [
+            {"id": 50, "slug": "my-article-hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
+             "media_details": {"filesize": len(content)}},
+        ])
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 50
+        mock_delete.assert_not_called()
+        mock_post.assert_not_called()
+
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unknown_remote_size_reuses_without_delete(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    ):
+        """No media_details on the candidate: remote size is unknown, so
+        reuse rather than churn."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"any-bytes")
+        mock_get.return_value = mock_response(200, [
+            {"id": 50, "slug": "my-article-hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp"},
+        ])
+
+        media_id = wp.upload_media(str(img))
+
+        assert media_id == 50
+        mock_delete.assert_not_called()
+        mock_post.assert_not_called()
+
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_url_source_never_treated_as_stale(
+        self, mock_get, mock_post, mock_delete, wp, mock_response
+    ):
+        """A URL source has no local file to size (no download happens just to
+        size it), so it must keep reusing an exact-name match exactly as
+        before this freshness check existed, regardless of remote size."""
+        wp._current_article_scope = "my-article"
+        url = "https://cdn.example.com/hero.webp"
+        mock_get.return_value = mock_response(200, [
+            {"id": 50, "slug": "my-article-hero",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
+             "media_details": {"filesize": 999}},
+        ])
+
+        media_id = wp.upload_media(url)
+
+        assert media_id == 50
+        mock_delete.assert_not_called()
+        mock_post.assert_not_called()
+
+
+# ===========================================================================
 # Malformed embedded Gutenberg blocks abort the post cleanly
 # ===========================================================================
 

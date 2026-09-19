@@ -28,6 +28,7 @@ _session = requests.Session()
 _session.headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 requests.get = _session.get
 requests.post = _session.post
+requests.delete = _session.delete
 from datetime import date, datetime
 import getpass
 
@@ -1072,13 +1073,25 @@ class WordPressPost:
             print(f"⚠ Error resolving local attachment for {url}: {e}")
         return None
 
-    def find_existing_media(self, filename):
+    def find_existing_media(self, filename, local_size=None):
         """Look up existing media by filename. Returns (id, source_url) or None.
 
         Queries WordPress by attachment slug (which is derived from the filename
         without extension via sanitize_title). Verifies that a candidate's
         source_url ends with the exact requested filename so that slug collisions
         across different file extensions are not treated as matches.
+
+        local_size, when given, is compared against the candidate's
+        media_details.filesize. A regenerated image can be written back to
+        disk under the same filename with different bytes (an article's
+        images get re-rendered without changing the target name), and a
+        filename match alone would keep serving the old picture. On a size
+        mismatch, the one attachment this exact slug query and exact filename
+        match identified is force-deleted, and None is returned so the
+        caller's upload takes the name back. A missing remote size, or no
+        local_size at all (a URL source has none without downloading it),
+        is treated as unchanged - this is a size check, not a hash, so two
+        different files of identical length still read as the same.
         """
         base = os.path.splitext(filename)[0]
         slug_base = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-')
@@ -1095,8 +1108,19 @@ class WordPressPost:
                 return None
             for item in response.json():
                 source_url = item.get('source_url', '')
-                if source_url.rsplit('/', 1)[-1].lower() == filename.lower():
-                    return (item['id'], source_url)
+                if source_url.rsplit('/', 1)[-1].lower() != filename.lower():
+                    continue
+                remote_size = (item.get('media_details') or {}).get('filesize')
+                if local_size is not None and remote_size is not None and remote_size != local_size:
+                    print(f"⚠ '{filename}' changed size (remote={remote_size}, local={local_size}); replacing id={item['id']}")
+                    requests.delete(
+                        f"{self.api_url}/media/{item['id']}",
+                        auth=self.auth,
+                        params={'force': True},
+                        timeout=30,
+                    )
+                    return None
+                return (item['id'], source_url)
         except (requests.RequestException, KeyError, ValueError) as e:
             print(f"⚠ Error querying existing media for {filename}: {e}")
         return None
@@ -1114,7 +1138,9 @@ class WordPressPost:
           1. In-run cache by source path/URL (avoids duplicate work in one run).
           2. Compute the scoped target filename for this upload.
           3. Pre-upload lookup via find_existing_media against the target
-             filename (avoids re-creating attachments on republish).
+             filename (avoids re-creating attachments on republish), passing
+             the local file's size so a same-name match with different bytes
+             is replaced instead of reused.
           4. Actual upload via the file/URL helper, using the target filename
              in Content-Disposition.
 
@@ -1135,10 +1161,18 @@ class WordPressPost:
                 self._media_source_cache[filepath_or_url] = (media_id, source_url)
                 return media_id
 
+        # A URL source has no local size without downloading it, so it keeps
+        # relying on the filename match alone, same as before the freshness
+        # check below existed.
         if filepath_or_url.startswith(('http://', 'https://')):
             original_filename = os.path.basename(filepath_or_url.split('?')[0])
+            local_size = None
         else:
             original_filename = os.path.basename(filepath_or_url)
+            try:
+                local_size = os.path.getsize(filepath_or_url)
+            except OSError:
+                local_size = None
 
         # Apply article scope to derive the target WP filename, and dedup only
         # against the scoped name. Without a scope we cannot safely dedup by
@@ -1150,7 +1184,7 @@ class WordPressPost:
         target_filename = original_filename
         if scope and original_filename and '.' in original_filename:
             target_filename = f"{scope}-{original_filename}"
-            existing = self.find_existing_media(target_filename)
+            existing = self.find_existing_media(target_filename, local_size=local_size)
             if existing:
                 media_id, source_url = existing
                 print(f"✓ Reusing existing media: {target_filename} (id={media_id})")
