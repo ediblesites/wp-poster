@@ -3769,3 +3769,63 @@ class TestRankmathLegacyKeys:
         captured = capsys.readouterr()
         # No spurious "legacy" warning for a non-listed key.
         assert "rank_math_robots" not in captured.err
+
+
+# ===========================================================================
+# Locating an article's images by where they sit
+# ===========================================================================
+#
+# A relative image path in a markdown file conventionally means "next to this
+# file", so the article's own directory is tried first and the working
+# directory second. That lets a site write `body-1.webp` and lets one that
+# already writes `content/<slug>/hero.webp` from the repo root keep working.
+#
+# With no featured_image key at all, featured.webp beside the markdown file is
+# the featured image, so a site can identify it by where the file is rather
+# than declaring it twice.
+
+
+class TestArticleRelativeImagePaths:
+    def _poster(self, article_dir=None):
+        poster = WordPressPost.__new__(WordPressPost)
+        poster._current_article_dir = str(article_dir) if article_dir else None
+        return poster
+
+    def test_a_path_beside_the_article_is_resolved(self, tmp_path):
+        (tmp_path / "body-1.webp").write_bytes(b"x")
+        poster = self._poster(tmp_path)
+        assert poster.resolve_local_path("body-1.webp") == str(tmp_path / "body-1.webp")
+
+    def test_a_path_that_is_not_beside_the_article_is_left_alone(self, tmp_path):
+        poster = self._poster(tmp_path)
+        assert poster.resolve_local_path("content/x/hero.webp") == "content/x/hero.webp"
+
+    def test_a_url_is_never_touched(self, tmp_path):
+        poster = self._poster(tmp_path)
+        url = "https://example.com/a.webp"
+        assert poster.resolve_local_path(url) == url
+
+    def test_an_absolute_path_is_never_touched(self, tmp_path):
+        poster = self._poster(tmp_path)
+        assert poster.resolve_local_path("/tmp/a.webp") == "/tmp/a.webp"
+
+    def test_no_article_dir_means_no_change(self):
+        assert self._poster().resolve_local_path("body-1.webp") == "body-1.webp"
+
+
+class TestFeaturedImageByConvention:
+    def _poster(self, article_dir=None):
+        poster = WordPressPost.__new__(WordPressPost)
+        poster._current_article_dir = str(article_dir) if article_dir else None
+        return poster
+
+    def test_featured_webp_beside_the_article_is_found(self, tmp_path):
+        (tmp_path / "featured.webp").write_bytes(b"x")
+        poster = self._poster(tmp_path)
+        assert poster.conventional_featured_image() == str(tmp_path / "featured.webp")
+
+    def test_nothing_is_found_when_the_file_is_absent(self, tmp_path):
+        assert self._poster(tmp_path).conventional_featured_image() is None
+
+    def test_nothing_is_found_without_an_article_dir(self):
+        assert self._poster().conventional_featured_image() is None

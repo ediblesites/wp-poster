@@ -415,6 +415,35 @@ class WordPressPost:
 
         return frontmatter, raw_content
 
+    FEATURED_BY_CONVENTION = 'featured.webp'
+
+    def conventional_featured_image(self):
+        """featured.webp beside the article being published, or None."""
+        article_dir = getattr(self, '_current_article_dir', None)
+        if not article_dir:
+            return None
+        candidate = os.path.join(article_dir, self.FEATURED_BY_CONVENTION)
+        return candidate if os.path.exists(candidate) else None
+
+    def resolve_local_path(self, path):
+        """Turn a relative image path into one that exists, or return it unchanged.
+
+        A relative path in a markdown file conventionally means "next to this
+        file", so the article's own directory is tried first. Falling back to
+        the working directory keeps paths that are already written relative to
+        the repository root working unchanged.
+
+        Absolute paths and URLs are returned as given.
+        """
+        if not path or path.startswith(('http://', 'https://')) or os.path.isabs(path):
+            return path
+        article_dir = getattr(self, '_current_article_dir', None)
+        if article_dir:
+            beside = os.path.join(article_dir, path)
+            if os.path.exists(beside):
+                return beside
+        return path
+
     def process_image_url(self, image_path_or_url):
         """Process image URL - upload (or reuse existing) and return (final_url, media_id).
 
@@ -423,6 +452,8 @@ class WordPressPost:
         (None, None), which signals the markdown converter to drop the image.
         """
         is_url = image_path_or_url.startswith(('http://', 'https://'))
+        if not is_url:
+            image_path_or_url = self.resolve_local_path(image_path_or_url)
 
         if not is_url and not os.path.exists(image_path_or_url):
             print(f"✗ Inline image file not found: {image_path_or_url}")
@@ -684,10 +715,12 @@ class WordPressPost:
         leak state onto subsequent calls.
         """
         self._current_article_scope = self._article_scope_for(filepath)
+        self._current_article_dir = os.path.dirname(os.path.abspath(filepath)) if filepath else None
         try:
             return self._do_post_to_wordpress(filepath, draft, raw, author_context, verbose)
         finally:
             self._current_article_scope = None
+            self._current_article_dir = None
 
     def _do_post_to_wordpress(self, filepath, draft, raw, author_context, verbose):
         if raw:
@@ -815,9 +848,15 @@ class WordPressPost:
                 if term_ids:
                     post_data[taxonomy] = term_ids
         
-        # Handle featured image (treat null/empty the same as absent)
-        if frontmatter.get('featured_image'):
-            media_id = self.upload_media(frontmatter['featured_image'])
+        # Handle featured image (treat null/empty the same as absent).
+        # With no featured_image key, featured.webp beside the markdown file is
+        # the featured image. That lets a site identify it by where the file is
+        # rather than by declaring it twice.
+        featured = frontmatter.get('featured_image')
+        if not featured:
+            featured = self.conventional_featured_image()
+        if featured:
+            media_id = self.upload_media(self.resolve_local_path(featured))
             if media_id:
                 post_data['featured_media'] = media_id
         
