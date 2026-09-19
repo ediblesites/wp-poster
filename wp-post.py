@@ -837,11 +837,20 @@ class WordPressPost:
                 print(f"[verbose] Updating post: POST {url}")
             response = _request_with_retry('post', url, auth=self.auth, json=post_data, timeout=30)
         else:
-            # Create new post
+            # Create new post. Deliberately NOT retried: wp-post has no
+            # slug-based dedup on create, so if the response to a successful
+            # create is lost in transit, retrying would resend the same POST
+            # and create a second post. Retrying the id-bearing update branch
+            # above is safe because it targets an existing id either way; this
+            # branch has no id yet, so a retry cannot tell "lost response"
+            # from "never arrived" and would duplicate the post in the first
+            # case. See the parity audit section 3.3, which warns about this
+            # exact shape for a retry at any level, not just the whole
+            # wp-post invocation.
             url = f"{self.api_url}/{api_endpoint}"
             if verbose:
                 print(f"[verbose] Creating post: POST {url}")
-            response = _request_with_retry('post', url, auth=self.auth, json=post_data, timeout=30)
+            response = requests.post(url, auth=self.auth, json=post_data, timeout=30)
 
         if verbose:
             print(f"[verbose] Response: {response.status_code}")

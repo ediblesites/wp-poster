@@ -695,6 +695,26 @@ class TestPostFailure:
         assert result["success"] is False
         assert result["status_code"] == 403
 
+    @patch("wp_post.time.sleep")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_create_post_does_not_retry_on_connection_error(
+        self, mock_get, mock_post, mock_sleep, wp, md_file
+    ):
+        """Creating a new post has no id yet and no slug-based dedup, so if a
+        successful create's response is lost, a retry would resend the same
+        POST and duplicate the post. The create branch must call
+        requests.post directly, not through the retry wrapper: exactly one
+        attempt, no backoff sleep, and the failure surfaces immediately."""
+        path = md_file({"title": "T"}, "body")
+        mock_post.side_effect = requests.ConnectionError("dropped")
+
+        with pytest.raises(requests.ConnectionError):
+            wp.post_to_wordpress(path, raw=True)
+
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+
 
 class TestPostCustomTaxonomies:
     @patch("wp_post.requests.post")
