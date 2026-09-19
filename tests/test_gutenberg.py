@@ -1,6 +1,8 @@
 """Tests for gutenberg.py — GutenbergConverter."""
 
-from gutenberg import GutenbergConverter
+import pytest
+
+from gutenberg import GutenbergConverter, youtube_id
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +329,110 @@ class TestImages:
         result = converter.convert(md)
         assert "wp:image" in result
         assert result.count("wp:paragraph") >= 2
+
+
+# ---------------------------------------------------------------------------
+# Video, written as an image pointing at YouTube
+# ---------------------------------------------------------------------------
+
+VIDEO = "![Video: the filter comes out.](https://youtu.be/bNsGaNe0jfo)"
+
+
+class TestYoutubeEmbeds:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://youtu.be/bNsGaNe0jfo",
+            "https://www.youtube.com/watch?v=bNsGaNe0jfo",
+            "https://youtube.com/watch?v=bNsGaNe0jfo",
+            "https://m.youtube.com/watch?v=bNsGaNe0jfo",
+            "https://www.youtube.com/watch?v=bNsGaNe0jfo&t=30s",
+            "https://www.youtube.com/shorts/bNsGaNe0jfo",
+            "https://www.youtube.com/live/bNsGaNe0jfo",
+            "https://www.youtube.com/embed/bNsGaNe0jfo",
+            "https://www.youtube-nocookie.com/embed/bNsGaNe0jfo",
+        ],
+    )
+    def test_youtube_id_reads_every_shape_an_author_might_paste(self, url):
+        assert youtube_id(url) == "bNsGaNe0jfo"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/a.jpg",
+            "https://www.youtube.com/results?search_query=x",
+            "https://www.youtube.com/@somechannel",
+            "https://notyoutube.com/watch?v=bNsGaNe0jfo",
+            "https://evilyoutube.com/watch?v=bNsGaNe0jfo",
+            "cat.jpg",
+        ],
+    )
+    def test_youtube_id_rejects_everything_else(self, url):
+        assert youtube_id(url) is None
+
+    def test_a_lone_youtube_image_becomes_an_embed_block(self, converter):
+        out = converter.convert(VIDEO)
+        assert (
+            '<!-- wp:embed {"url":"https://www.youtube.com/watch?v=bNsGaNe0jfo",'
+            '"type":"video","providerNameSlug":"youtube","responsive":true,'
+            '"className":"wp-embed-aspect-16-9 wp-has-aspect-ratio"} -->' in out
+        )
+        assert (
+            '<figure class="wp-block-embed is-type-video is-provider-youtube '
+            'wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio">' in out
+        )
+        assert (
+            '<div class="wp-block-embed__wrapper">\n'
+            "https://www.youtube.com/watch?v=bNsGaNe0jfo\n</div>" in out
+        )
+        assert "wp:image" not in out
+        assert "wp:paragraph" not in out
+
+    def test_any_url_shape_normalises_to_the_watch_url(self, converter):
+        out = converter.convert("![](https://www.youtube.com/shorts/bNsGaNe0jfo)")
+        assert out.count("https://www.youtube.com/watch?v=bNsGaNe0jfo") == 2
+
+    def test_alt_text_becomes_the_caption(self, converter):
+        assert (
+            '<figcaption class="wp-element-caption">Video: the filter comes out.'
+            "</figcaption>" in converter.convert(VIDEO)
+        )
+
+    def test_a_video_without_alt_text_has_no_caption(self, converter):
+        out = converter.convert("![](https://youtu.be/bNsGaNe0jfo)")
+        assert "figcaption" not in out
+        assert "wp:embed" in out
+
+    def test_the_caption_is_escaped(self, converter):
+        out = converter.convert("![Tools & tips](https://youtu.be/bNsGaNe0jfo)")
+        assert "&amp;" in out
+        assert "Tools & tips" not in out
+
+    def test_a_youtube_url_with_no_video_id_says_so_instead_of_embedding(self, converter):
+        out = converter.convert("![x](https://www.youtube.com/results?search_query=mould)")
+        assert "wp:embed" not in out
+        assert "wp:image" not in out
+        assert "no video id" in out
+
+    def test_a_video_inside_a_sentence_degrades_to_a_link(self, converter):
+        out = converter.convert("Watch ![this clip](https://youtu.be/bNsGaNe0jfo) first.")
+        assert "wp:embed" not in out
+        assert "<!-- wp:paragraph -->" in out
+        assert '<a href="https://www.youtube.com/watch?v=bNsGaNe0jfo">this clip</a>' in out
+
+    def test_two_videos_in_one_article_keep_their_own_captions(self, converter):
+        out = converter.convert(
+            "![first](https://youtu.be/bNsGaNe0jfo)\n\n"
+            "![second](https://youtu.be/QIS0JIj5ZQM)"
+        )
+        assert ">first</figcaption>" in out
+        assert ">second</figcaption>" in out
+        assert "watch?v=QIS0JIj5ZQM" in out
+
+    def test_an_ordinary_image_is_untouched_by_the_video_path(self, converter):
+        out = converter.convert("![a cat](https://x/a.jpg)")
+        assert "wp:image" in out
+        assert "wp:embed" not in out
 
 
 # ---------------------------------------------------------------------------

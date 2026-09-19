@@ -5,7 +5,9 @@ Uses mistune for CommonMark-compliant parsing with a custom renderer
 that emits WordPress Gutenberg block markup.
 """
 
+import json
 import re
+from urllib.parse import parse_qs, urlsplit
 
 import mistune
 from mistune.plugins.footnotes import footnotes
@@ -131,6 +133,90 @@ def _wp_image_block(url, alt, title=None, media_id=None):
     )
 
 
+# A markdown image pointing at YouTube, alone in its paragraph, becomes a
+# core/embed block instead of a wp:image block. image() cannot decide this on
+# its own: whether the video is alone in its paragraph is something only
+# paragraph() knows, so image() leaves a marker and parks the video details
+# on the renderer, the same way it leaves _IMAGE_SENTINEL for images.
+YOUTUBE_HOSTS = frozenset({"youtube.com", "youtu.be", "youtube-nocookie.com"})
+YOUTUBE_WATCH = "https://www.youtube.com/watch?v={video_id}"
+
+_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_VIDEO_MARKER = re.compile(r"<!--wp-poster-video:(\d+)-->")
+
+_EMBED_ATTRS = {
+    "type": "video",
+    "providerNameSlug": "youtube",
+    "responsive": True,
+    "className": "wp-embed-aspect-16-9 wp-has-aspect-ratio",
+}
+_EMBED_FIGURE_CLASSES = (
+    "wp-block-embed is-type-video is-provider-youtube "
+    "wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio"
+)
+
+
+def youtube_id(url):
+    """Return the video id in a YouTube URL, or None if there is not one.
+
+    Accepts the shapes an author can reasonably paste: a watch URL, a short
+    youtu.be link, a Shorts link, a live link, and an embed URL on either host.
+    """
+    if not is_youtube_url(url):
+        return None
+    parts = urlsplit(url)
+    host = _bare_host(parts.netloc)
+    segments = [s for s in parts.path.split("/") if s]
+    if host == "youtu.be":
+        candidate = segments[0] if segments else ""
+    elif segments and segments[0] == "watch":
+        candidate = parse_qs(parts.query).get("v", [""])[0]
+    elif len(segments) > 1 and segments[0] in ("shorts", "embed", "live", "v"):
+        candidate = segments[1]
+    else:
+        candidate = ""
+    return candidate if _VIDEO_ID.match(candidate) else None
+
+
+def is_youtube_url(url):
+    """True when the URL points at YouTube, whatever shape it is in."""
+    try:
+        return _bare_host(urlsplit(url).netloc) in YOUTUBE_HOSTS
+    except ValueError:
+        return False
+
+
+def _bare_host(netloc):
+    host = netloc.lower().split("@")[-1].split(":")[0]
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    return host
+
+
+def embed_block(video_id, caption=""):
+    """A core/embed block for one YouTube video.
+
+    WordPress resolves the bare URL through oEmbed, which is what gives the
+    block its preview in the editor and its responsive wrapper on the front
+    end. A site wanting the youtube-nocookie host needs an embed_oembed_html
+    filter on the server, since oEmbed only ever resolves the youtube.com host.
+    """
+    url = YOUTUBE_WATCH.format(video_id=video_id)
+    if caption:
+        figcaption = f'<figcaption class="wp-element-caption">{caption}</figcaption>'
+    else:
+        figcaption = ""
+    attrs = {"url": url}
+    attrs.update(_EMBED_ATTRS)
+    return (
+        f"<!-- wp:embed {json.dumps(attrs, separators=(',', ':'))} -->\n"
+        f'<figure class="{_EMBED_FIGURE_CLASSES}">'
+        f'<div class="wp-block-embed__wrapper">\n{url}\n</div>{figcaption}</figure>\n'
+        f"<!-- /wp:embed -->"
+    )
+
+
 class GutenbergRenderer(mistune.HTMLRenderer):
     """Mistune renderer that outputs WordPress Gutenberg block markup."""
 
@@ -139,6 +225,7 @@ class GutenbergRenderer(mistune.HTMLRenderer):
     def __init__(self, image_handler=None):
         super().__init__()
         self.image_handler = image_handler or (lambda url: (url, None))
+        self._videos = []
 
     # ------------------------------------------------------------------
     # Block-level overrides
@@ -150,6 +237,22 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         stripped = text.strip()
         if stripped.startswith(_IMAGE_SENTINEL) and stripped.endswith(_IMAGE_SENTINEL):
             return stripped.replace(_IMAGE_SENTINEL, "") + "\n\n"
+
+        # A paragraph containing only a video marker is promoted the same
+        # way, to a standalone wp:embed block.
+        lone_video = _VIDEO_MARKER.fullmatch(stripped)
+        if lone_video:
+            return self._video_block(int(lone_video.group(1))) + "\n\n"
+        if _VIDEO_MARKER.search(stripped):
+            # A video in the middle of a sentence is an authoring slip.
+            # Leave a working link rather than a block that cannot sit
+            # inside a paragraph, so nothing on the page breaks.
+            stripped = _VIDEO_MARKER.sub(self._video_link, stripped)
+            return (
+                f"<!-- wp:paragraph -->\n"
+                f"<p>{stripped}</p>\n"
+                f"<!-- /wp:paragraph -->\n\n"
+            )
 
         # Handle HTML <img> tags that mistune passed through
         processed = self._process_html_images(text)
@@ -214,11 +317,30 @@ class GutenbergRenderer(mistune.HTMLRenderer):
     # ------------------------------------------------------------------
 
     def image(self, text, url, title=None):
+        # A YouTube link is not passed to the image handler: it never
+        # becomes a media-library image, so there is no upload to resolve.
+        if is_youtube_url(url):
+            video_id = youtube_id(url)
+            if not video_id:
+                return f"<!-- video: no video id in {mistune.util.escape(url)} -->"
+            caption = mistune.util.striptags(text or "")
+            self._videos.append((video_id, caption, url))
+            return f"<!--wp-poster-video:{len(self._videos) - 1}-->"
+
         final_url, media_id = self.image_handler(url)
         if not final_url:
             return ""
         block = _wp_image_block(final_url, text, title=title, media_id=media_id)
         return f"{_IMAGE_SENTINEL}{block}{_IMAGE_SENTINEL}"
+
+    def _video_block(self, index):
+        video_id, caption, _ = self._videos[index]
+        return embed_block(video_id, caption)
+
+    def _video_link(self, match):
+        video_id, caption, _ = self._videos[int(match.group(1))]
+        url = YOUTUBE_WATCH.format(video_id=video_id)
+        return f'<a href="{url}">{caption or url}</a>'
 
     def link(self, text, url, title=None):
         return f'<a href="{url}">{text}</a>'
