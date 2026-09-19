@@ -3889,3 +3889,55 @@ class TestSingularCategoryKey:
         fm = {"title": "x"}
         names = fm.get("categories") or ([fm["category"]] if fm.get("category") else None)
         assert names is None
+
+
+class TestSlugDedupBeforeCreate:
+    """A post whose id was lost must be adopted, not created again.
+
+    WordPress suffixes the second post's slug rather than refusing it, so the
+    duplicate is silent until someone notices two pages for one article.
+    Ported from h2gr's publisher, which grew this after hitting it.
+    """
+
+    def _poster(self):
+        poster = WordPressPost.__new__(WordPressPost)
+        poster.api_url = "https://example.com/wp-json/wp/v2"
+        poster.auth = ("u", "p")
+        poster.id_key = "id"
+        return poster
+
+    def _response(self, status, payload):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = payload
+        return r
+
+    def test_a_published_post_with_the_slug_is_found(self):
+        poster = self._poster()
+        with patch.object(wp_post, "_request_with_retry",
+                          return_value=self._response(200, [{"id": 7}])):
+            assert poster.find_post_by_slug("a-slug") == 7
+
+    def test_a_draft_is_found_when_no_published_post_matches(self):
+        poster = self._poster()
+        responses = [self._response(200, []), self._response(200, [{"id": 9}])]
+        with patch.object(wp_post, "_request_with_retry", side_effect=responses):
+            assert poster.find_post_by_slug("a-slug") == 9
+
+    def test_no_match_returns_none(self):
+        poster = self._poster()
+        with patch.object(wp_post, "_request_with_retry",
+                          return_value=self._response(200, [])):
+            assert poster.find_post_by_slug("a-slug") is None
+
+    def test_an_empty_slug_makes_no_request(self):
+        poster = self._poster()
+        with patch.object(wp_post, "_request_with_retry") as req:
+            assert poster.find_post_by_slug("") is None
+            req.assert_not_called()
+
+    def test_a_network_error_returns_none_rather_than_raising(self):
+        poster = self._poster()
+        with patch.object(wp_post, "_request_with_retry",
+                          side_effect=requests.ConnectionError("down")):
+            assert poster.find_post_by_slug("a-slug") is None

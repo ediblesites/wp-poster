@@ -428,6 +428,34 @@ class WordPressPost:
 
         return frontmatter, raw_content
 
+    def find_post_by_slug(self, slug, api_endpoint='posts'):
+        """An existing post with this slug, or None.
+
+        A post whose id was lost from its frontmatter would otherwise be
+        created again, leaving two live posts on the same slug. WordPress
+        resolves that by suffixing the second one, so the duplicate is silent
+        until someone notices two pages. Checked for published and draft,
+        because a draft holds the slug too.
+        """
+        if not slug:
+            return None
+        for status in ('publish', 'draft'):
+            try:
+                response = _request_with_retry(
+                    'get',
+                    f"{self.api_url}/{api_endpoint}",
+                    auth=self.auth,
+                    params={'slug': slug, 'status': status, 'per_page': 1},
+                    timeout=30,
+                )
+            except requests.RequestException:
+                return None
+            if response.status_code == 200:
+                items = response.json()
+                if items:
+                    return items[0].get('id')
+        return None
+
     def existing_post_id(self, frontmatter):
         """The WordPress post id this article already has, or None.
 
@@ -896,9 +924,21 @@ class WordPressPost:
         # A bare `id:` in frontmatter loads as None; treat that as absent so
         # we don't POST to /{endpoint}/None and 404. Only a truthy id routes
         # to the update branch.
-        if self.existing_post_id(frontmatter):
+        post_id_in_file = self.existing_post_id(frontmatter)
+        if not post_id_in_file:
+            # No id on file. Before creating, check whether this slug is
+            # already taken: adopting the existing post is an update, while
+            # creating turns a lost id into two live pages.
+            adopted = self.find_post_by_slug(post_data.get('slug'), api_endpoint)
+            if adopted:
+                print(f"✓ Adopting existing post for slug '{post_data.get('slug')}' (id={adopted})")
+                frontmatter = dict(frontmatter or {})
+                frontmatter[self.id_key] = adopted
+                post_id_in_file = adopted
+
+        if post_id_in_file:
             # Update existing post
-            url = f"{self.api_url}/{api_endpoint}/{self.existing_post_id(frontmatter)}"
+            url = f"{self.api_url}/{api_endpoint}/{post_id_in_file}"
             if verbose:
                 print(f"[verbose] Updating post: POST {url}")
             response = _request_with_retry('post', url, auth=self.auth, json=post_data, timeout=30)
