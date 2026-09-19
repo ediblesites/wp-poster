@@ -291,8 +291,13 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         )
 
     def heading(self, text, level, **attrs):
+        # WordPress omits the level attribute for an h2, because 2 is the
+        # block's default and its save() only writes non-default attributes.
+        # Emitting it anyway still renders correctly but is not what the
+        # editor writes, so a round trip through the editor would rewrite it.
+        block_attrs = "" if level == 2 else f' {{"level":{level}}}'
         return (
-            f'<!-- wp:heading {{"level":{level}}} -->\n'
+            f"<!-- wp:heading{block_attrs} -->\n"
             f'<h{level} class="wp-block-heading">{text}</h{level}>\n'
             f"<!-- /wp:heading -->\n\n"
         )

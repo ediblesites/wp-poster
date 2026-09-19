@@ -82,9 +82,13 @@ class TestHeadings:
         assert '<h1 class="wp-block-heading">Title</h1>' in result
 
     def test_h2(self, converter):
+        # WordPress omits the level attribute for an h2: 2 is the block's
+        # default and save() only writes non-default attributes. Checked
+        # against a live WordPress 7.1.1 install's own stored markup.
         result = converter.convert("## Subtitle")
-        assert '"level":2' in result
-        assert "<h2" in result
+        assert "<!-- wp:heading -->" in result
+        assert '"level"' not in result
+        assert '<h2 class="wp-block-heading">' in result
 
     def test_h3(self, converter):
         result = converter.convert("### H3")
