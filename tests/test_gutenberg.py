@@ -616,3 +616,67 @@ class TestConfigurableImageAlign:
         plain = GutenbergConverter(image_align=None).convert("![a cat](https://x/a.jpg)")
         assert 'alt="a cat"' in aligned and 'alt="a cat"' in plain
         assert '"sizeSlug":"full"' in aligned and '"sizeSlug":"full"' in plain
+
+
+# ---------------------------------------------------------------------------
+# Images that are not alone in their paragraph (issue #27)
+# ---------------------------------------------------------------------------
+
+
+class TestImagesInsideText:
+    def test_no_nul_byte_ever_reaches_the_output(self, converter):
+        md = (
+            "[![](https://x/a.jpg)](https://example.com/)\n\n"
+            "Text ![](https://x/b.png) more text.\n\n"
+            "# Head ![](https://x/c.png)\n\n"
+            "- item ![](https://x/d.png)\n\n"
+            "| A |\n| --- |\n| ![](https://x/e.png) |\n"
+        )
+        assert "\x00" not in converter.convert(md)
+
+    def test_an_image_beside_text_is_a_plain_img(self, converter):
+        out = converter.convert("Text ![b](https://x/b.png) more text.")
+        assert out == (
+            "<!-- wp:paragraph -->\n"
+            '<p>Text <img src="https://x/b.png" alt="b"/> more text.</p>\n'
+            "<!-- /wp:paragraph -->"
+        )
+
+    def test_an_inline_image_keeps_its_media_id_class(self):
+        c = GutenbergConverter(image_handler=lambda url: (url, 42))
+        out = c.convert("Text ![b](https://x/b.png) more.")
+        assert '<img src="https://x/b.png" alt="b" class="wp-image-42"/>' in out
+        assert "wp:image" not in out
+
+    def test_a_linked_image_alone_is_one_linked_block(self, converter):
+        out = converter.convert("[![a](https://x/a.jpg)](https://example.com/)")
+        assert out == (
+            '<!-- wp:image {"sizeSlug":"full","linkDestination":"custom","align":"center"} -->\n'
+            '<figure class="wp-block-image aligncenter size-full">'
+            '<a href="https://example.com/"><img src="https://x/a.jpg" alt="a"/></a></figure>\n'
+            "<!-- /wp:image -->"
+        )
+
+    def test_a_linked_image_beside_text_stays_in_the_paragraph(self, converter):
+        out = converter.convert("See [![a](https://x/a.jpg)](https://example.com/) here.")
+        assert "wp:image" not in out
+        assert '<a href="https://example.com/"><img src="https://x/a.jpg" alt="a"/></a>' in out
+
+    def test_a_bookmark_card_import_gives_clean_paragraphs(self, converter):
+        # The shape of the imported bookmark cards on payperfax.com: the
+        # blank lines break the link, leaving each image beside text.
+        md = (
+            "[![](https://x/card.jpg)\n\n"
+            "Title | site\n\n"
+            "![](https://x/favicon.ico)www.site.de](https://site.de/a)"
+        )
+        out = converter.convert(md)
+        assert "\x00" not in out
+        assert "wp:image" not in out
+        assert '<p>[<img src="https://x/card.jpg" alt=""/></p>' in out
+        assert '<img src="https://x/favicon.ico" alt=""/>www.site.de' in out
+
+    def test_each_image_block_is_written_once(self, converter):
+        out = converter.convert("[![](https://x/a.jpg)](https://example.com/)")
+        assert out.count("<!-- wp:image") == 1
+        assert out.count("<!-- /wp:image -->") == 1

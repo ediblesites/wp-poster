@@ -23,9 +23,13 @@ from mistune.plugins.table import table
 from callouts import callout_plugin
 
 
-# Sentinel used by the renderer to mark standalone images so
-# paragraph() can promote them to wp:image blocks.
-_IMAGE_SENTINEL = "\x00GUTENBERG_IMAGE\x00"
+# Marker image() leaves in place of each image. Whether an image becomes a
+# wp:image block or a plain <img> depends on whether it is alone in its
+# paragraph, which only paragraph() knows. Any marker paragraph() does not
+# see (a heading, a list item, a table cell) becomes a plain <img> at the end
+# of convert(), so no marker ever reaches the output.
+_IMAGE_MARKER = re.compile(r"<!--wp-poster-image:(\d+)-->")
+_LINKED_IMAGE = re.compile(r'<a href="([^"]*)"><!--wp-poster-image:(\d+)--></a>')
 
 # Placeholder template for raw Gutenberg blocks extracted from the
 # source before markdown parsing (reinserted verbatim afterwards).
@@ -120,15 +124,21 @@ def _extract_raw_gutenberg(text, line_offset=0):
 DEFAULT_IMAGE_ALIGN = "center"
 
 
-def _wp_image_block(url, alt, title=None, media_id=None, align=DEFAULT_IMAGE_ALIGN):
+def _wp_image_block(url, alt, title=None, media_id=None, align=DEFAULT_IMAGE_ALIGN,
+                    href=None):
     """Build a wp:image Gutenberg block string.
 
     `align` is the block's alignment. It defaults to center, which is what
     every site using this tool has had. A site whose theme already places
     images the way it wants can pass None and get an unaligned block, which is
     what the WordPress editor produces when you do not choose an alignment.
+
+    `href` makes the image a link, written the way the editor writes an
+    image given a custom link: linkDestination "custom", and the <a> inside
+    the figure. The URL itself lives only in the markup.
     """
-    attrs = '"sizeSlug":"full","linkDestination":"none"'
+    destination = "custom" if href else "none"
+    attrs = f'"sizeSlug":"full","linkDestination":"{destination}"'
     if align:
         attrs += f',"align":"{align}"'
     if media_id:
@@ -150,20 +160,36 @@ def _wp_image_block(url, alt, title=None, media_id=None, align=DEFAULT_IMAGE_ALI
 
     align_cls = f" align{align}" if align else ""
 
+    img = f'<img src="{url}" alt="{alt_attr}"{cls}/>'
+    if href:
+        img = f'<a href="{href}">{img}</a>'
+
     return (
         f"<!-- wp:image {{{attrs}}} -->\n"
         f'<figure class="wp-block-image{align_cls} size-full">'
-        f'<img src="{url}" alt="{alt_attr}"{cls}/>'
+        f"{img}"
         f"{caption}</figure>\n"
         f"<!-- /wp:image -->"
     )
+
+
+def _inline_img(url, alt, title=None, media_id=None):
+    """A plain <img> for an image that sits among text.
+
+    A wp:image block cannot sit inside a paragraph, so an image beside text
+    stays an inline <img>, which is what the editor's inline image is.
+    """
+    alt_attr = (alt or "").replace('"', '&quot;')
+    title_attr = f' title="{title.replace(chr(34), "&quot;")}"' if title else ""
+    cls = f' class="wp-image-{media_id}"' if media_id else ""
+    return f'<img src="{url}" alt="{alt_attr}"{title_attr}{cls}/>'
 
 
 # A markdown image pointing at YouTube, alone in its paragraph, becomes a
 # core/embed block instead of a wp:image block. image() cannot decide this on
 # its own: whether the video is alone in its paragraph is something only
 # paragraph() knows, so image() leaves a marker and parks the video details
-# on the renderer, the same way it leaves _IMAGE_SENTINEL for images.
+# on the renderer, the same way it leaves _IMAGE_MARKER for images.
 YOUTUBE_HOSTS = frozenset({"youtube.com", "youtu.be", "youtube-nocookie.com"})
 YOUTUBE_WATCH = "https://www.youtube.com/watch?v={video_id}"
 
@@ -253,17 +279,23 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         self.image_handler = image_handler or (lambda url: (url, None))
         self.image_align = image_align
         self._videos = []
+        self._images = []
 
     # ------------------------------------------------------------------
     # Block-level overrides
     # ------------------------------------------------------------------
 
     def paragraph(self, text):
-        # A paragraph containing only an image sentinel is promoted
+        # A paragraph holding only an image, linked or not, is promoted
         # to a standalone wp:image block (no wrapping paragraph).
         stripped = text.strip()
-        if stripped.startswith(_IMAGE_SENTINEL) and stripped.endswith(_IMAGE_SENTINEL):
-            return stripped.replace(_IMAGE_SENTINEL, "") + "\n\n"
+        lone_image = _IMAGE_MARKER.fullmatch(stripped)
+        if lone_image:
+            return self._image_block(int(lone_image.group(1))) + "\n\n"
+        linked_image = _LINKED_IMAGE.fullmatch(stripped)
+        if linked_image:
+            return self._image_block(int(linked_image.group(2)),
+                                     href=linked_image.group(1)) + "\n\n"
 
         # A paragraph containing only a video marker is promoted the same
         # way, to a standalone wp:embed block.
@@ -275,14 +307,17 @@ class GutenbergRenderer(mistune.HTMLRenderer):
             # Leave a working link rather than a block that cannot sit
             # inside a paragraph, so nothing on the page breaks.
             stripped = _VIDEO_MARKER.sub(self._video_link, stripped)
+            stripped = self.inline_images(stripped)
             return (
                 f"<!-- wp:paragraph -->\n"
                 f"<p>{stripped}</p>\n"
                 f"<!-- /wp:paragraph -->\n\n"
             )
 
-        # Handle HTML <img> tags that mistune passed through
-        processed = self._process_html_images(text)
+        # Handle HTML <img> tags that mistune passed through. Markdown
+        # images become inline <img> only after this, so it does not
+        # mistake them for raw HTML and promote them to blocks.
+        processed = self.inline_images(self._process_html_images(text))
 
         return (
             f"<!-- wp:paragraph -->\n"
@@ -362,9 +397,20 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         final_url, media_id = self.image_handler(url)
         if not final_url:
             return ""
-        block = _wp_image_block(final_url, text, title=title, media_id=media_id,
-                                align=self.image_align)
-        return f"{_IMAGE_SENTINEL}{block}{_IMAGE_SENTINEL}"
+        self._images.append((final_url, text, title, media_id))
+        return f"<!--wp-poster-image:{len(self._images) - 1}-->"
+
+    def _image_block(self, index, href=None):
+        url, alt, title, media_id = self._images[index]
+        return _wp_image_block(url, alt, title=title, media_id=media_id,
+                               align=self.image_align, href=href)
+
+    def inline_images(self, text):
+        """Replace each image marker in text with a plain <img>."""
+        def _img(match):
+            url, alt, title, media_id = self._images[int(match.group(1))]
+            return _inline_img(url, alt, title=title, media_id=media_id)
+        return _IMAGE_MARKER.sub(_img, text)
 
     def _video_block(self, index):
         video_id, caption, _ = self._videos[index]
@@ -520,7 +566,7 @@ class GutenbergConverter:
             markdown_content, line_offset=line_offset
         )
 
-        raw = self._md(text)
+        raw = self._renderer.inline_images(self._md(text))
 
         # Collapse runs of blank lines and trim, then re-join blocks
         # with double-newlines for Gutenberg spacing.

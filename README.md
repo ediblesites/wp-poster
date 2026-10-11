@@ -222,7 +222,7 @@ Inline images in the post body are uploaded and their URLs are rewritten to poin
 - Remote URL upload fails → original URL is kept as-is
 - Local file missing or upload fails → image is dropped from output
 
-All uploaded images become Gutenberg `wp:image` blocks (center-aligned, full size). When a caption is present, it appears as a `<figcaption>`.
+An image alone in its paragraph becomes a Gutenberg `wp:image` block (center-aligned, full size). When a caption is present, it appears as a `<figcaption>`. A linked image alone in its paragraph, `[![alt](img)](https://example.com/)`, becomes one `wp:image` block with that link (`linkDestination: custom`). An image among text, in a heading, a list item or a table cell stays a plain inline `<img>`, because a block cannot sit inside a paragraph.
 
 ### Media library dedup
 

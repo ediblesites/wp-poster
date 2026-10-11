@@ -67,7 +67,7 @@ Use `--test` before the real post when generating new content or converting mark
 All images are uploaded to the WordPress media library automatically.
 
 - **Featured image**: set `featured_image:` in frontmatter to a local path or URL.
-- **Inline images** (markdown mode only): `![alt](file.jpg)` and `![alt](url)` are uploaded and their URLs are rewritten to the WordPress copy. `![alt](url "caption")` adds a `<figcaption>`. HTML `<figure>`/`<img>` tags are also handled.
+- **Inline images** (markdown mode only): `![alt](file.jpg)` and `![alt](url)` are uploaded and their URLs are rewritten to the WordPress copy. `![alt](url "caption")` adds a `<figcaption>`. HTML `<figure>`/`<img>` tags are also handled. An image alone in its paragraph (linked or not) becomes a `wp:image` block; an image among text stays an inline `<img>`.
 - Remote upload failure → original URL kept. Local file missing → image dropped.
 - `--test` skips all uploads.
 
