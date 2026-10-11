@@ -31,6 +31,10 @@ from callouts import callout_plugin
 _IMAGE_MARKER = re.compile(r"<!--wp-poster-image:(\d+)-->")
 _LINKED_IMAGE = re.compile(r'<a href="([^"]*)"><!--wp-poster-image:(\d+)--></a>')
 
+# What a paragraph holds when its only image was dropped (a local file that
+# is missing): nothing, or a link with nothing inside it.
+_EMPTY_LINK = re.compile(r'<a href="[^"]*"></a>')
+
 # Placeholder template for raw Gutenberg blocks extracted from the
 # source before markdown parsing (reinserted verbatim afterwards).
 _RAW_BLOCK_SENTINEL = "\x00GUTENBERG_RAW_{}\x00"
@@ -289,6 +293,13 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         # A paragraph holding only an image, linked or not, is promoted
         # to a standalone wp:image block (no wrapping paragraph).
         stripped = text.strip()
+
+        # A paragraph left empty by a dropped image produces no block.
+        # Markdown never makes an empty paragraph on purpose, so nothing
+        # the author wrote is lost.
+        if not stripped or _EMPTY_LINK.fullmatch(stripped):
+            return ""
+
         lone_image = _IMAGE_MARKER.fullmatch(stripped)
         if lone_image:
             return self._image_block(int(lone_image.group(1))) + "\n\n"

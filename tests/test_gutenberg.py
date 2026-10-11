@@ -680,3 +680,32 @@ class TestImagesInsideText:
         out = converter.convert("[![](https://x/a.jpg)](https://example.com/)")
         assert out.count("<!-- wp:image") == 1
         assert out.count("<!-- /wp:image -->") == 1
+
+
+# ---------------------------------------------------------------------------
+# A dropped image leaves no empty block behind (issue #29)
+# ---------------------------------------------------------------------------
+
+
+class TestDroppedImage:
+    @pytest.fixture
+    def dropping(self):
+        # The handler's answer for a local file that is missing.
+        return GutenbergConverter(image_handler=lambda url: (None, None))
+
+    def test_a_lone_dropped_image_leaves_no_block(self, dropping):
+        out = dropping.convert("Before.\n\n![x](missing.jpg)\n\nAfter.")
+        assert "<p></p>" not in out
+        assert out.count("<!-- wp:paragraph -->") == 2
+
+    def test_a_lone_dropped_linked_image_leaves_no_empty_link(self, dropping):
+        out = dropping.convert("[![x](missing.jpg)](https://e.com/)")
+        assert out == ""
+
+    def test_text_around_a_dropped_image_stays(self, dropping):
+        out = dropping.convert("Text ![x](missing.jpg) more.")
+        assert "<p>Text  more.</p>" in out
+
+    def test_a_link_with_its_own_text_stays(self, dropping):
+        out = dropping.convert("[see ![x](missing.jpg)](https://e.com/)")
+        assert '<a href="https://e.com/">see </a>' in out
