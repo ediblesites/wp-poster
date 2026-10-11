@@ -69,7 +69,7 @@ All images are uploaded to the WordPress media library automatically.
 - **Featured image**: set `featured_image:` in frontmatter to a local path or URL.
 - **Inline images** (markdown mode only): `![alt](file.jpg)` and `![alt](url)` are uploaded and their URLs are rewritten to the WordPress copy. `![alt](url "caption")` adds a `<figcaption>`. HTML `<figure>`/`<img>` tags are also handled. An image alone in its paragraph (linked or not) becomes a `wp:image` block; an image among text stays an inline `<img>`.
 - Remote upload failure → original URL kept. Local file missing → image dropped.
-- `--test` skips all uploads.
+- `--test` makes no network calls: nothing is uploaded or downloaded, and each image keeps its `src` as written.
 
 Images are deduplicated per-article against the media library: before uploading, the script looks up an existing attachment under the article's scoped filename and reuses it if found. Inline image URLs that already point at the target site are reused directly (the existing attachment is resolved by exact `source_url`, with no re-download or re-upload).
 

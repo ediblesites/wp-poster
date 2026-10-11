@@ -3941,3 +3941,37 @@ class TestSlugDedupBeforeCreate:
         with patch.object(wp_post, "_request_with_retry",
                           side_effect=requests.ConnectionError("down")):
             assert poster.find_post_by_slug("a-slug") is None
+
+
+# ---------------------------------------------------------------------------
+# --test previews the post without touching the network (issue #28)
+# ---------------------------------------------------------------------------
+
+
+class TestTestModeIsOffline:
+    def _run_test_mode(self, tmp_path, capsys, body):
+        (tmp_path / "local.jpg").write_bytes(b"\xff\xd8\xff")
+        md = tmp_path / "index.md"
+        md.write_text("---\ntitle: t\nformat: markdown\n---\n\n" + body)
+
+        def _no_network(*args, **kwargs):
+            raise AssertionError(f"--test made a network call: {args}")
+
+        with patch("wp_post.requests.get", side_effect=_no_network), \
+             patch("wp_post.requests.post", side_effect=_no_network), \
+             patch("wp_post.requests.Session.request", side_effect=_no_network), \
+             patch.object(sys, "argv", ["wp-post", "--test", str(md)]), \
+             pytest.raises(SystemExit) as exit_info:
+            wp_post.main()
+        assert exit_info.value.code == 0
+        return capsys.readouterr().out
+
+    def test_a_remote_image_keeps_its_source_url(self, tmp_path, capsys):
+        out = self._run_test_mode(tmp_path, capsys, "![r](https://img.example.org/a.png)\n")
+        assert '<img src="https://img.example.org/a.png" alt="r"/>' in out
+        assert "Upload" not in out and "Download" not in out
+
+    def test_a_local_image_keeps_its_source_path(self, tmp_path, capsys):
+        out = self._run_test_mode(tmp_path, capsys, "![l](local.jpg)\n")
+        assert '<img src="local.jpg" alt="l"/>' in out
+        assert "<p></p>" not in out

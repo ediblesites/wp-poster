@@ -240,7 +240,7 @@ The lookup uses `GET /wp/v2/media?slug=<scope>-<basename>` and verifies that a c
 - Sources whose URL has no usable filename (e.g. `https://picsum.photos/400/300`) cannot be scoped or deduped and will upload fresh on each run.
 - Calling `upload_media` directly without going through `post_to_wordpress` (no article context) intentionally skips the dedup query entirely - filename-only dedup is unsafe across articles.
 
-`--test` mode skips all uploads.
+`--test` makes no network calls. Nothing is uploaded or downloaded, and each image keeps its `src` exactly as the source wrote it.
 
 ## Test Mode
 

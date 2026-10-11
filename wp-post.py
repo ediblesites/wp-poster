@@ -143,7 +143,8 @@ def _request_with_retry(method, *args, **kwargs):
 
 class WordPressPost:
     def __init__(self, site_url, username, app_password,
-                 callout_config=None, resolve_bookmarks=True, locale=None):
+                 callout_config=None, resolve_bookmarks=True, locale=None,
+                 upload_images=True):
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
@@ -160,6 +161,7 @@ class WordPressPost:
         self._callout_config = callout_config
         self._locale = locale
         self._resolve_bookmarks = resolve_bookmarks
+        self._upload_images = upload_images
         self._bookmark_cache = {}  # slug -> resolved dict or None
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
@@ -172,7 +174,8 @@ class WordPressPost:
         """Parse markdown file with frontmatter and convert to Gutenberg blocks"""
         # Remember where this article lives so a relative image path can be
         # resolved against it. Set here rather than only in post_to_wordpress
-        # so --test previews resolve images the same way a real publish does.
+        # so any caller of this method resolves images the way a publish does.
+        # (--test never resolves them: it turns uploads off.)
         self._current_article_dir = os.path.dirname(os.path.abspath(filepath)) if filepath else None
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -210,7 +213,13 @@ class WordPressPost:
         return frontmatter, blocks_content
 
     def _handle_image(self, image_url):
-        """Image handler callback for the markdown converter."""
+        """Image handler callback for the markdown converter.
+
+        With uploads off (--test), every image keeps its src exactly as the
+        source wrote it, and nothing goes over the network. See issue #28.
+        """
+        if not self._upload_images:
+            return (image_url, None)
         return self.process_image_url(image_url)
 
     def _resolve_bookmark(self, target):
@@ -2478,7 +2487,7 @@ images:
   article's parent directory orphans the prior scoped attachment;
   sources without a usable filename (e.g. https://picsum.photos/400/300)
   cannot be scoped and will upload fresh on each run.
-  --test mode skips all uploads.
+  --test makes no network calls: images keep their src as written.
 
 callouts:
   Eight callout types are written as GFM blockquotes in markdown mode:
@@ -2648,12 +2657,14 @@ def main():
             sys.exit(1)
 
         # Create a dummy poster instance just for parsing (no bookmark
-        # lookups in test mode - the dummy site URL is not real). The
-        # locale is still resolved for real, so --test previews the same
-        # callout labels a publish would emit.
+        # lookups and no image uploads in test mode - the dummy site URL is
+        # not real, and a preview must not touch the network). The locale is
+        # still resolved for real, so --test previews the same callout
+        # labels a publish would emit.
         poster = WordPressPost('https://example.com', 'user', 'pass',
                                callout_config=load_config().get('callouts'),
                                resolve_bookmarks=False,
+                               upload_images=False,
                                locale=resolve_locale_for_file(args.file))
 
         # Resolve format: CLI > frontmatter > config > default

@@ -101,7 +101,7 @@ their URLs are rewritten to the WordPress media copy.
 
 Failure: remote upload fails → original URL kept; local file missing → image dropped.
 
-Images are deduplicated per-article against the media library (and same-site URLs reuse their existing attachment); `--test` skips uploads.
+Images are deduplicated per-article against the media library (and same-site URLs reuse their existing attachment); `--test` makes no network calls, and each image keeps its `src` as written.
 
 ## Format resolution (first match wins)
 
