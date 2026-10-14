@@ -14,12 +14,13 @@ import glob as glob_mod
 import html
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 import requests
 import yaml
 
@@ -516,6 +517,15 @@ class WordPressPost:
         if not is_url and not os.path.exists(image_path_or_url):
             print(f"✗ Inline image file not found: {image_path_or_url}")
             return (None, None)
+
+        # An image already on this site is linked where it is. Uploading it
+        # again would add a copy to the media library on every publish
+        # (issue #30); the attachment lookup only adds its id to the block.
+        if is_url and self._is_same_host_url(image_path_or_url):
+            media_id = self._reuse_same_host(image_path_or_url)
+            if not media_id:
+                print(f"⚠ No attachment found for same-site image, keeping its URL: {image_path_or_url}")
+            return (image_path_or_url, media_id)
 
         media_id = self.upload_media(image_path_or_url)
         if media_id:
@@ -1209,74 +1219,146 @@ class WordPressPost:
             return False
         return urlparse(value).netloc.lower() == urlparse(self.site_url).netloc.lower()
 
-    def resolve_local_attachment(self, url):
-        """Resolve an image URL already hosted on the target site to its attachment.
+    # A search term can match many attachments (every copy of a common
+    # basename), so results are paged. The cap only bounds a runaway query.
+    _MEDIA_SEARCH_PER_PAGE = 100
+    _MEDIA_SEARCH_MAX_PAGES = 10
 
-        Returns (id, source_url) when an attachment's source_url matches the given
-        URL exactly, else None. Matching is exact (not by basename) so a different
-        image sharing the same basename at another upload path is not aliased.
+    def _search_media(self, term):
+        """Return the attachments whose file name or title contains term.
+
+        WordPress's REST media search matches the attached file's name as well
+        as the title, so this finds an attachment whatever its slug or title
+        is. A lookup by slug cannot: WordPress keeps underscores that a
+        filename-derived slug would drop, adds -2 when the slug is taken, and
+        an edited title changes it (issue #30).
+
+        Raises requests.RequestException or ValueError for the caller to report.
         """
-        filename = os.path.basename(urlparse(url).path)
-        base = os.path.splitext(filename)[0]
-        slug_base = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-')
-        if not slug_base:
-            return None
-        try:
+        items = []
+        for page in range(1, self._MEDIA_SEARCH_MAX_PAGES + 1):
             response = _request_with_retry(
                 'get',
                 f"{self.api_url}/media",
                 auth=self.auth,
-                params={'slug': slug_base, 'per_page': 10},
+                params={'search': term, 'per_page': self._MEDIA_SEARCH_PER_PAGE, 'page': page},
                 timeout=30,
             )
             if response.status_code != 200:
-                return None
-            for item in response.json():
-                if item.get('source_url', '') == url:
-                    return (item['id'], item['source_url'])
+                break
+            batch = response.json()
+            items.extend(batch)
+            if len(batch) < self._MEDIA_SEARCH_PER_PAGE:
+                break
+        return items
+
+    @staticmethod
+    def _uploads_path(url):
+        """Return the part of an upload URL below wp-content/uploads/, or None.
+
+        Host and any subsite prefix are dropped: on a multisite sharing one
+        media library, the /fr subsite's API reports a file as
+        /fr/wp-content/uploads/... while articles link it without the /fr.
+        """
+        path = unquote(urlparse(url).path)
+        marker = '/wp-content/uploads/'
+        index = path.find(marker)
+        if index < 0:
+            return None
+        return path[index + len(marker):]
+
+    @staticmethod
+    def _attachment_files(item):
+        """Every file name an attachment answers to: its own, each resized
+        copy, and the original a large upload was scaled down from."""
+        names = {item.get('source_url', '').rsplit('/', 1)[-1]}
+        details = item.get('media_details') or {}
+        if details.get('original_image'):
+            names.add(details['original_image'])
+        for size in (details.get('sizes') or {}).values():
+            if isinstance(size, dict) and size.get('file'):
+                names.add(size['file'])
+        return names
+
+    def resolve_local_attachment(self, url):
+        """Resolve an image URL already hosted on the target site to its attachment.
+
+        Returns (id, url) when an attachment holds the file at that exact
+        upload path, as its own file, a resized copy or a scaled original;
+        else None. The URL comes back as given, so the article keeps the size
+        it linked. Matching is by upload path (not basename) so a different
+        image sharing the same basename at another upload path is not aliased.
+        """
+        target = self._uploads_path(url)
+        if not target:
+            return None
+        directory, filename = posixpath.split(target)
+        # A resized copy's -300x200 suffix is not in the attached file's
+        # name, so it is left out of the search and matched via sizes below.
+        term = re.sub(r'-\d+x\d+$', '', os.path.splitext(filename)[0])
+        if not term:
+            return None
+        try:
+            for item in self._search_media(term):
+                source = self._uploads_path(item.get('source_url', ''))
+                if source is None or posixpath.dirname(source) != directory:
+                    continue
+                if filename in self._attachment_files(item):
+                    return (item['id'], url)
         except (requests.RequestException, KeyError, ValueError) as e:
             print(f"⚠ Error resolving local attachment for {url}: {e}")
         return None
 
+    def _reuse_same_host(self, url):
+        """Return the id of the attachment behind a same-site URL, or None."""
+        cached = self._media_source_cache.get(url)
+        if cached:
+            return cached[0]
+        resolved = self.resolve_local_attachment(url)
+        if not resolved:
+            return None
+        media_id, source_url = resolved
+        print(f"✓ Reusing existing media on this site: {source_url} (id={media_id})")
+        self._media_source_cache[url] = resolved
+        return media_id
+
     def find_existing_media(self, filename, local_size=None):
         """Look up existing media by filename. Returns (id, source_url) or None.
 
-        Queries WordPress by attachment slug (which is derived from the filename
-        without extension via sanitize_title). Verifies that a candidate's
-        source_url ends with the exact requested filename so that slug collisions
-        across different file extensions are not treated as matches.
+        Searches the media library for the filename without extension (see
+        _search_media), then keeps only a candidate whose file is exactly the
+        requested filename, so a longer name containing it or the same name
+        with another extension is not treated as a match. A large upload that
+        WordPress scaled down matches by its original file name. When several
+        attachments share the name (copies left by issue #30), the oldest wins
+        so every publish settles on the same one.
 
         local_size, when given, is compared against the candidate's
         media_details.filesize. A regenerated image can be written back to
         disk under the same filename with different bytes (an article's
         images get re-rendered without changing the target name), and a
         filename match alone would keep serving the old picture. On a size
-        mismatch, the one attachment this exact slug query and exact filename
-        match identified is force-deleted, and None is returned so the
-        caller's upload takes the name back. A missing remote size, or no
-        local_size at all (a URL source has none without downloading it),
-        is treated as unchanged - this is a size check, not a hash, so two
-        different files of identical length still read as the same.
+        mismatch, the one attachment this exact filename match identified is
+        force-deleted, and None is returned so the caller's upload takes the
+        name back. A missing remote size, a scaled match (its filesize is the
+        scaled copy's), or no local_size at all (a URL source has none without
+        downloading it), is treated as unchanged - this is a size check, not a
+        hash, so two different files of identical length still read as the same.
         """
-        base = os.path.splitext(filename)[0]
-        slug_base = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-')
-        if not slug_base:
+        stem = os.path.splitext(filename)[0]
+        if not stem:
             return None
         try:
-            response = _request_with_retry(
-                'get',
-                f"{self.api_url}/media",
-                auth=self.auth,
-                params={'slug': slug_base, 'per_page': 10},
-                timeout=30,
-            )
-            if response.status_code != 200:
-                return None
-            for item in response.json():
+            items = self._search_media(stem)
+            for item in sorted(items, key=lambda i: i.get('id', 0)):
                 source_url = item.get('source_url', '')
-                if source_url.rsplit('/', 1)[-1].lower() != filename.lower():
+                details = item.get('media_details') or {}
+                if source_url.rsplit('/', 1)[-1].lower() == filename.lower():
+                    remote_size = details.get('filesize')
+                elif (details.get('original_image') or '').lower() == filename.lower():
+                    remote_size = None
+                else:
                     continue
-                remote_size = (item.get('media_details') or {}).get('filesize')
                 if local_size is not None and remote_size is not None and remote_size != local_size:
                     print(f"⚠ '{filename}' changed size (remote={remote_size}, local={local_size}); replacing id={item['id']}")
                     requests.delete(
@@ -1318,13 +1400,12 @@ class WordPressPost:
 
         # If the source already points at the target site, reuse the existing
         # attachment instead of re-downloading and re-uploading it (issue #10).
-        # Falls through to the normal upload path when no attachment matches.
+        # Falls through to the normal upload path when no attachment matches:
+        # a featured image needs an id, and the scoped lookup below finds that
+        # upload again on the next publish. Body images never get here.
         if self._is_same_host_url(filepath_or_url):
-            resolved = self.resolve_local_attachment(filepath_or_url)
-            if resolved:
-                media_id, source_url = resolved
-                print(f"✓ Reusing existing media on this site: {source_url} (id={media_id})")
-                self._media_source_cache[filepath_or_url] = (media_id, source_url)
+            media_id = self._reuse_same_host(filepath_or_url)
+            if media_id:
                 return media_id
 
         # A URL source has no local size without downloading it, so it keeps
@@ -2479,7 +2560,7 @@ images:
   markdown file's parent directory basename, sanitized to slug form, and
   is prefixed onto every uploaded filename - so an article in
   content/my-post/ uploads its hero.webp as my-post-hero.webp. Before
-  uploading, the script queries by the scoped slug and reuses any
+  uploading, the script searches for the scoped filename and reuses any
   existing attachment, so republishing a post does not create duplicates
   or trigger filename suffixing (image-1.jpg, image-2.jpg, ...). The
   scoping prevents cross-article filename collisions when multiple

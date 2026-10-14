@@ -1641,7 +1641,7 @@ class TestImageDedup:
         mock_post.assert_not_called()
         get_call = mock_get.call_args
         assert "/wp-json/wp/v2/media" in get_call[0][0]
-        assert get_call[1]["params"]["slug"] == "my-article-hero"
+        assert get_call[1]["params"]["search"] == "my-article-hero"
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
@@ -1742,7 +1742,7 @@ class TestImageDedup:
         The library has an orphan canonical attachment at slug "hero" (id 584)
         from whichever article was published first long ago. A new article
         publishing its own hero.webp must NOT be aliased to that orphan -
-        wp-post must query by the scoped slug "fresh-article-hero" which
+        wp-post must search for the scoped name "fresh-article-hero" which
         returns empty, then upload a fresh scoped attachment.
         """
         wp._current_article_scope = "fresh-article"
@@ -1750,10 +1750,10 @@ class TestImageDedup:
         img.write_bytes(b"fresh-content")
 
         def routed_get(url, **kwargs):
-            slug = kwargs.get("params", {}).get("slug", "")
+            term = kwargs.get("params", {}).get("search", "")
             resp = MagicMock()
             resp.status_code = 200
-            if slug == "hero":
+            if term == "hero":
                 # The orphan canonical that the OLD code would have matched
                 resp.json.return_value = [{
                     "id": 584, "slug": "hero",
@@ -1773,8 +1773,8 @@ class TestImageDedup:
         # Critical: must NOT be aliased to the orphan id 584
         assert media_id == 9999
         assert media_id != 584
-        # The query must have been the scoped slug, not the bare basename
-        assert mock_get.call_args[1]["params"]["slug"] == "fresh-article-hero"
+        # The query must have been the scoped name, not the bare basename
+        assert mock_get.call_args[1]["params"]["search"] == "fresh-article-hero"
         # And the POST went out with the scoped Content-Disposition filename
         cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
         assert 'filename="fresh-article-hero.webp"' in cd_header
@@ -1830,6 +1830,95 @@ class TestImageDedup:
         wp.post_to_wordpress(path, raw=True)
 
         assert wp._current_article_scope is None
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_underscore_name_found_on_republish(self, mock_get, mock_post, wp, mock_response):
+        """Issue #30: WordPress keeps the underscore in faxonline-app_ as a slug,
+        so a slug built from the filename (faxonline-app) missed every time.
+        The search keeps the name as it is and finds the earlier upload."""
+        wp._current_article_scope = "faxonline-app"
+        url = "https://cdn.other.com/faxonline.app_.jpg"
+        mock_get.return_value = mock_response(200, [
+            {"id": 10762, "slug": "faxonline-app-faxonline-app_",
+             "source_url": "https://example.com/wp-content/uploads/2026/06/faxonline-app-faxonline.app_.jpg"},
+        ])
+
+        media_id = wp.upload_media(url)
+
+        assert media_id == 10762
+        mock_post.assert_not_called()
+        assert mock_get.call_args[1]["params"]["search"] == "faxonline-app-faxonline.app_"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_suffixed_slug_still_matches_by_filename(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """WordPress adds -2 to a slug that is already taken. The match is by
+        file name, so the suffixed slug does not hide the attachment."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"x")
+        mock_get.return_value = mock_response(200, [
+            {"id": 42, "slug": "my-article-hero-2",
+             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp"},
+        ])
+
+        assert wp.upload_media(str(img)) == 42
+        mock_post.assert_not_called()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_longer_name_containing_target_is_not_a_match(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """Search matches substrings; only the exact file name may be reused."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"x")
+        mock_get.return_value = mock_response(200, [
+            {"id": 7, "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero-1.webp"},
+            {"id": 8, "source_url": "https://example.com/wp-content/uploads/2026/04/other-my-article-hero.webp"},
+        ])
+        mock_post.return_value = mock_response(201, {
+            "id": 9, "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
+        })
+
+        assert wp.upload_media(str(img)) == 9
+        mock_post.assert_called_once()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_several_exact_matches_reuse_the_oldest(self, mock_get, mock_post, wp, mock_response):
+        """Copies left by issue #30 share one file name in different months.
+        The oldest wins, so every publish settles on the same attachment."""
+        wp._current_article_scope = "faxonline-app"
+        mock_get.return_value = mock_response(200, [
+            {"id": 11712, "source_url": "https://example.com/wp-content/uploads/2026/10/faxonline-app-faxonline.app_.jpg"},
+            {"id": 10762, "source_url": "https://example.com/wp-content/uploads/2026/06/faxonline-app-faxonline.app_.jpg"},
+            {"id": 11001, "source_url": "https://example.com/wp-content/uploads/2026/07/faxonline-app-faxonline.app_.jpg"},
+        ])
+
+        assert wp.upload_media("https://cdn.other.com/faxonline.app_.jpg") == 10762
+        mock_post.assert_not_called()
+
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_scaled_upload_matches_by_original_name(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    ):
+        """A large upload is stored as name-scaled.ext with the uploaded name
+        kept as original_image. It is the same upload: reuse it. Its filesize
+        is the scaled copy's, so it is not a sign of changed bytes."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "big.jpg"
+        img.write_bytes(b"x" * 5000)
+        mock_get.return_value = mock_response(200, [
+            {"id": 60, "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-big-scaled.jpg",
+             "media_details": {"filesize": 1200, "original_image": "my-article-big.jpg"}},
+        ])
+
+        assert wp.upload_media(str(img)) == 60
+        mock_post.assert_not_called()
+        mock_delete.assert_not_called()
 
 
 # ===========================================================================
@@ -2003,11 +2092,14 @@ class TestMalformedEmbeddedGutenberg:
 # Same-host inline images are reused, not re-downloaded/re-uploaded (issue #10)
 # ===========================================================================
 #
-# When an inline image URL already points at the target WordPress instance,
-# upload_media must resolve the existing attachment instead of downloading the
-# bytes and POSTing a duplicate. Resolution is by exact source_url match so a
-# same-basename image at a different upload path is not falsely aliased. If no
-# attachment matches, it falls back to the normal download+upload path.
+# When an image URL already points at the target WordPress instance, the
+# existing attachment is resolved instead of downloading the bytes and POSTing
+# a duplicate. Resolution is by upload path (the part below wp-content/uploads/)
+# so a same-basename image at a different upload path is not falsely aliased,
+# and a subsite's /fr prefix does not hide a shared-library file. A body image
+# (process_image_url) is never uploaded, matched or not (issue #30); a featured
+# image (upload_media) falls back to the normal download+upload path, since it
+# needs an id.
 
 class TestSameHostMediaReuse:
     @patch("wp_post.requests.post")
@@ -2082,6 +2174,98 @@ class TestSameHostMediaReuse:
 
         assert media_id == 61
         mock_post.assert_called_once()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_body_image_with_no_attachment_keeps_url_and_never_uploads(
+        self, mock_get, mock_post, wp, mock_response
+    ):
+        """Issue #30: a same-host body image is linked where it is. With no
+        matching attachment it keeps its URL with no id - nothing is
+        downloaded and nothing is added to the media library."""
+        url = "https://example.com/wp-content/uploads/2023/08/faxonline.app_.jpg"
+        mock_get.return_value = mock_response(200, [])
+
+        assert wp.process_image_url(url) == (url, None)
+        mock_post.assert_not_called()
+        for c in mock_get.call_args_list:
+            assert "/wp-json/wp/v2/media" in c[0][0]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_body_image_resolved_keeps_its_url_and_gets_id(self, mock_get, mock_post, wp, mock_response):
+        url = "https://example.com/wp-content/uploads/2023/08/faxonline.app_.jpg"
+        mock_get.return_value = mock_response(200, [
+            {"id": 2479, "slug": "faxonline-app_", "source_url": url},
+        ])
+
+        assert wp.process_image_url(url) == (url, 2479)
+        mock_post.assert_not_called()
+        assert mock_get.call_args[1]["params"]["search"] == "faxonline.app_"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_subsite_reports_shared_library_under_its_own_path(self, mock_get, mock_post, mock_response):
+        """On a multisite with a shared library, the /fr API reports
+        /fr/wp-content/uploads/... while the article links the file without
+        /fr. The upload path is what has to match, not the whole URL."""
+        wp = WordPressPost("https://example.com/fr", "user", "pass")
+        url = "https://example.com/wp-content/uploads/2023/08/faxonline.app_.jpg"
+        mock_get.return_value = mock_response(200, [
+            {"id": 2479, "source_url": "https://example.com/fr/wp-content/uploads/2023/08/faxonline.app_.jpg"},
+        ])
+
+        assert wp.process_image_url(url) == (url, 2479)
+        mock_post.assert_not_called()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_resized_copy_resolves_to_its_attachment(self, mock_get, mock_post, wp, mock_response):
+        """A -1024x556 URL is a resized copy of an attachment. The search
+        leaves the size off (it is not in the attached file's name) and the
+        match is made through the attachment's sizes. The article keeps the
+        size it linked."""
+        url = "https://example.com/wp-content/uploads/2023/08/faxzero-email-confirmation-1024x556.png"
+        mock_get.return_value = mock_response(200, [
+            {"id": 3239,
+             "source_url": "https://example.com/wp-content/uploads/2023/08/faxzero-email-confirmation.png",
+             "media_details": {"sizes": {
+                 "large": {"file": "faxzero-email-confirmation-1024x556.png"},
+                 "thumbnail": {"file": "faxzero-email-confirmation-150x150.png"},
+             }}},
+        ])
+
+        assert wp.process_image_url(url) == (url, 3239)
+        assert mock_get.call_args[1]["params"]["search"] == "faxzero-email-confirmation"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_scaled_original_resolves_to_its_attachment(self, mock_get, mock_post, wp, mock_response):
+        """A link to the original of a scaled upload belongs to the attachment
+        whose own file is the -scaled copy."""
+        url = "https://example.com/wp-content/uploads/2021/11/ppf-webform_payment.png"
+        mock_get.return_value = mock_response(200, [
+            {"id": 11803,
+             "source_url": "https://example.com/wp-content/uploads/2021/11/ppf-webform_payment-scaled.png",
+             "media_details": {"original_image": "ppf-webform_payment.png"}},
+        ])
+
+        assert wp.process_image_url(url) == (url, 11803)
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_match_on_a_later_page_is_found(self, mock_get, mock_post, wp, mock_response):
+        """A common name can match more attachments than one page holds."""
+        url = "https://example.com/wp-content/uploads/2025/07/image-5.png"
+        full_page = [
+            {"id": 1000 + n, "source_url": f"https://example.com/wp-content/uploads/2026/01/x-image-5-{n}.png"}
+            for n in range(100)
+        ]
+        pages = {1: full_page, 2: [{"id": 8001, "source_url": url}]}
+        mock_get.side_effect = lambda u, **kw: mock_response(200, pages[kw["params"]["page"]])
+
+        assert wp.process_image_url(url) == (url, 8001)
+        assert mock_get.call_count == 2
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
