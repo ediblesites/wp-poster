@@ -3547,6 +3547,79 @@ class TestSvgStrippingDetection:
         assert capsys.readouterr().err == ""
 
 
+class TestMetaDropDetection:
+    """WordPress silently drops meta keys not registered with show_in_rest."""
+
+    def test_warns_for_each_dropped_key(self, wp, capsys):
+        sent = {"homepage_url": "https://x.example", "kept": "v", "gone": 1}
+        post = {"meta": {"kept": "v"}}
+        assert wp._warn_if_meta_dropped(sent, post) == ["homepage_url", "gone"]
+        err = capsys.readouterr().err
+        assert "'homepage_url'" in err
+        assert "'gone'" in err
+        assert "'kept'" not in err
+        assert "show_in_rest" in err
+
+    def test_quiet_when_all_keys_stored(self, wp, capsys):
+        post = {"meta": {"a": "1", "b": ""}}
+        assert wp._warn_if_meta_dropped({"a": "1", "b": ""}, post) == []
+        assert capsys.readouterr().err == ""
+
+    def test_quiet_when_no_meta_sent(self, wp, capsys):
+        assert wp._warn_if_meta_dropped(None, {"meta": []}) == []
+        assert wp._warn_if_meta_dropped({}, {"meta": []}) == []
+        assert capsys.readouterr().err == ""
+
+    def test_empty_list_meta_means_all_dropped(self, wp, capsys):
+        # PHP encodes an empty registered-meta array as [], not {}.
+        assert wp._warn_if_meta_dropped({"x": 1}, {"meta": []}) == ["x"]
+        assert "'x'" in capsys.readouterr().err
+
+    def test_absent_meta_means_all_dropped(self, wp, capsys):
+        # No `meta` in the response: the post type exposes no meta over REST.
+        assert wp._warn_if_meta_dropped({"x": 1}, {}) == ["x"]
+        assert "'x'" in capsys.readouterr().err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_publish_warns_but_succeeds(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        path = md_file(
+            {"title": "T", "meta": {"homepage_url": "https://x.example", "kept": "v"}},
+            "body",
+        )
+        mock_post.return_value = mock_response(201, {
+            "id": 50,
+            "link": "https://example.com/?p=50",
+            "title": {"rendered": "T"},
+            "meta": {"kept": "v"},
+        })
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        sent = mock_post.call_args_list[0][1]["json"]
+        assert sent["meta"] == {"homepage_url": "https://x.example", "kept": "v"}
+        err = capsys.readouterr().err
+        assert "'homepage_url'" in err
+        assert "'kept'" not in err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_update_warns_too(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        path = md_file(
+            {"title": "T", "id": 51, "meta": {"homepage_url": "https://x.example"}},
+            "body",
+        )
+        mock_post.return_value = mock_response(200, {
+            "id": 51,
+            "link": "https://example.com/?p=51",
+            "title": {"rendered": "T"},
+            "meta": [],
+        })
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        assert "/posts/51" in mock_post.call_args_list[0][0][0]
+        assert "'homepage_url'" in capsys.readouterr().err
+
+
 class TestNormalizePostDate:
     """WordPress rejects a bare date; it needs a time component (issue #19)."""
 

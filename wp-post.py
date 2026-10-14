@@ -323,6 +323,33 @@ class WordPressPost:
         )
         return True
 
+    def _warn_if_meta_dropped(self, sent_meta, post):
+        """Warn for each meta key WordPress silently dropped on save.
+
+        The REST API only stores meta keys registered with show_in_rest
+        and ignores the rest without an error. The response's `meta`
+        object lists every registered key, so a sent key missing from it
+        was not stored. WordPress encodes an empty `meta` as [], and omits
+        it when the post type does not support custom-fields; both mean
+        nothing was stored. Returns the dropped keys. Never fails the
+        publish.
+        """
+        if not isinstance(sent_meta, dict) or not sent_meta:
+            return []
+        stored = post.get('meta')
+        if not isinstance(stored, dict):
+            stored = {}
+        dropped = [key for key in sent_meta if key not in stored]
+        for key in dropped:
+            print(
+                f"⚠ Meta key '{key}' was dropped by WordPress. It is not "
+                f"registered with show_in_rest for this post type, so the "
+                f"REST API ignored it. Register it with register_post_meta "
+                f"(show_in_rest => true) to store it.",
+                file=sys.stderr,
+            )
+        return dropped
+
     @staticmethod
     def _bookmark_slug(target):
         """Reduce a slug, /path/, or full URL to its final path segment.
@@ -984,6 +1011,7 @@ class WordPressPost:
             post = response.json()
             post_id = post['id']
             self._warn_if_svg_stripped(post_data.get('content', ''), post)
+            self._warn_if_meta_dropped(post_data.get('meta'), post)
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))

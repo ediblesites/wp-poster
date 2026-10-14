@@ -119,7 +119,7 @@ categories: [Cat1, Cat2]           # posts only, auto-created if missing
 tags: [tag1, tag2]                 # posts only, auto-created if missing
 taxonomies:
   custom_taxonomy: Term Name       # any taxonomy, auto-created if missing
-meta:
+meta:                              # keys need show_in_rest; dropped keys warn
   custom_field: value
 acf:
   field_name: value
