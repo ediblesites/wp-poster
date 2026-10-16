@@ -86,6 +86,13 @@ def _extract_raw_gutenberg(text, line_offset=0):
             i += 1
             continue
 
+        card = _match_bookmark_card(lines, i)
+        if card:
+            block, i = card
+            out_lines.extend(["", _RAW_BLOCK_SENTINEL.format(len(blocks)), ""])
+            blocks.append(block)
+            continue
+
         m = _WP_BLOCK_COMMENT_RE.match(line)
         if not m or m.group("close"):
             # Not a Gutenberg opener at column 0 (stray closers fall
@@ -123,6 +130,127 @@ def _extract_raw_gutenberg(text, line_offset=0):
         i = j
 
     return "\n".join(out_lines), blocks
+
+
+# A bookmark card is a link wrapping an image, a title, an optional
+# description and an optional publisher line, written across several lines:
+#
+#     [![](https://site/image.jpg)
+#
+#     Article title
+#
+#     One-line summary of the article.
+#
+#     ![](https://site/favicon.ico)www.site.com](https://site/article)
+#
+# It becomes a mamaduka/bookmark-card block (the Bookmark Card plugin),
+# always in the plugin's horizontal style. Blank lines are allowed between
+# the parts, and are the usual shape, so mistune would split the card into
+# stray paragraphs before paragraph() ever saw it. That is why it is matched
+# here on the source, beside the raw Gutenberg blocks, rather than in the
+# renderer. The card's images are never uploaded: the stored block points at
+# the original URLs, which is what the editor saves.
+_CARD_OPEN = re.compile(r"\[!\[[^\]\n]*\]\((https?://[^\s)]+)\)\s*")
+_CARD_CLOSE = re.compile(r"(.*)\]\((https?://[^\s)]+)\)\s*")
+_CARD_PUBLISHER = re.compile(
+    r"(?:!\[[^\]]*\]\((?P<icon>https?://[^\s)]+)\))?\s*"
+    r"(?P<host>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+)
+# How far past the image line a card's closing "](url)" may sit. Real cards
+# take seven lines; the limit stops a stray "[![" from swallowing a document.
+_CARD_MAX_LINES = 12
+
+
+def _match_bookmark_card(lines, i):
+    """Return (block, next_line_index) when a bookmark card starts at line i.
+
+    Returns None for anything else, which then goes through the normal
+    markdown path. A linked image with no text, or a link with no image,
+    is not a card.
+    """
+    opener = _CARD_OPEN.fullmatch(lines[i])
+    if not opener:
+        return None
+    for j in range(i + 1, min(i + 1 + _CARD_MAX_LINES, len(lines))):
+        closer = _CARD_CLOSE.fullmatch(lines[j])
+        if closer:
+            break
+        if lines[j].lstrip().startswith(("[![", "#", "<!--")):
+            return None
+    else:
+        return None
+
+    text = [s.strip() for s in lines[i + 1:j] + [closer.group(1)]]
+    text = [s for s in text if s]
+    if not text:
+        return None
+    # A link inside the text means the "[![" was never closed and the
+    # "](url)" found belongs to that link, not to a card. The favicon on
+    # the publisher line is the one image allowed.
+    plain = text[:-1] if _CARD_PUBLISHER.fullmatch(text[-1]) else text
+    if any("](" in s for s in plain):
+        return None
+    url = closer.group(2)
+    title, rest = text[0], text[1:]
+    icon = None
+    publisher = None
+    if rest:
+        found = _CARD_PUBLISHER.fullmatch(rest[-1])
+        if found:
+            icon, publisher = found.group("icon"), found.group("host")
+            rest = rest[:-1]
+    if publisher is None:
+        publisher = urlsplit(url).hostname or ""
+        publisher = publisher[4:] if publisher.startswith("www.") else publisher
+    return bookmark_card_block(url, opener.group(1), title, " ".join(rest),
+                               publisher, icon), j + 1
+
+
+# The block editor's serializer escapes as little as it can: a bare & (an
+# existing entity is left alone) and < in text, a bare & and " in an
+# attribute. Escaping more would read as a change the next time the post is
+# compared with what WordPress holds, so the card follows it exactly.
+_BARE_AMPERSAND = re.compile(r"&(?!(?:[a-z0-9]+|#[0-9]+|#x[a-f0-9]+);)", re.IGNORECASE)
+
+
+def _escape_text(value):
+    return _BARE_AMPERSAND.sub("&amp;", value).replace("<", "&lt;")
+
+
+def _escape_attr(value):
+    return _BARE_AMPERSAND.sub("&amp;", value).replace('"', "&quot;")
+
+
+def _block_attrs(attrs):
+    """Block comment attributes, encoded the way the editor writes them."""
+    encoded = json.dumps(attrs, separators=(",", ":"), ensure_ascii=False)
+    return (encoded.replace("--", "\\u002d\\u002d").replace("<", "\\u003c")
+            .replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace('\\"', "\\u0022"))
+
+
+def bookmark_card_block(url, image, title, description, publisher, icon=None):
+    """A mamaduka/bookmark-card block, as the plugin saves it from the editor.
+
+    The class names really do mix "bookmark-card__" and "bookmark_card__";
+    they are the plugin's own, copied from blocks the editor saved.
+    """
+    attrs = {"url": url, "className": "is-style-horizontal"}
+    icon_img = (f'<img class="bookmark_card__meta-icon" src="{_escape_attr(icon)}"/>'
+                if icon else "")
+    return (
+        f"<!-- wp:mamaduka/bookmark-card {_block_attrs(attrs)} -->\n"
+        f'<figure class="wp-block-mamaduka-bookmark-card is-style-horizontal">'
+        f'<a class="bookmark-card" href="{_escape_attr(url)}">'
+        f'<div class="bookmark-card__image"><img src="{_escape_attr(image)}"/></div>'
+        f'<div class="bookmark-card__content">'
+        f'<div class="bookmark-card__title">{_escape_text(title)}</div>'
+        f'<div class="bookmark-card__description">{_escape_text(description)}</div>'
+        f'<div class="bookmark_card__meta">{icon_img}'
+        f'<span class="bookmark_card__meta-publisher">{_escape_text(publisher)}</span>'
+        f"</div></div></a></figure>\n"
+        f"<!-- /wp:mamaduka/bookmark-card -->"
+    )
 
 
 DEFAULT_IMAGE_ALIGN = "center"

@@ -224,6 +224,26 @@ Inline images in the post body are uploaded and their URLs are rewritten to poin
 
 An image alone in its paragraph becomes a Gutenberg `wp:image` block (center-aligned, full size). When a caption is present, it appears as a `<figcaption>`. A linked image alone in its paragraph, `[![alt](img)](https://example.com/)`, becomes one `wp:image` block with that link (`linkDestination: custom`). An image among text, in a heading, a list item or a table cell stays a plain inline `<img>`, because a block cannot sit inside a paragraph.
 
+### Bookmark cards (external links)
+
+A link that wraps an image, a title, an optional description and an optional publisher line becomes a `wp:mamaduka/bookmark-card` block (needs the Mamaduka Bookmark Card plugin on the site). Blank lines between the parts are allowed:
+
+```markdown
+[![](https://site.com/image.jpg)
+
+Article title
+
+One-line summary of the article.
+
+![](https://site.com/favicon.ico)www.site.com](https://site.com/article)
+```
+
+- The first line after the image is the title. The last line is the publisher when it is a host name (`www.site.com`), with an optional favicon image before it. Every line between them is the description.
+- No publisher line → the publisher is the link's host, without `www.`. Only a title → the description is empty.
+- The card is always in the plugin's horizontal style (`is-style-horizontal`).
+- The card's images are not uploaded: the block keeps the original URLs, as the editor does. Image alt text is dropped.
+- A link without the leading image, `[Title](url)`, stays an ordinary link. For a card to another post on the same site, use the `[!BOOKMARK]` callout instead.
+
 ### Media library dedup
 
 Each article publishes its media into a per-article namespace in the WordPress media library. Before uploading, the script queries for an existing attachment under that namespace; if a match is found it is reused, so republishing a post does **not** create duplicate media or trigger WordPress's `image-1.jpg`, `image-2.jpg` filename suffixing.

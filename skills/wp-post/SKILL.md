@@ -71,6 +71,20 @@ All images are uploaded to the WordPress media library automatically.
 - Remote upload failure → original URL kept. Local file missing → image dropped.
 - `--test` makes no network calls: nothing is uploaded or downloaded, and each image keeps its `src` as written.
 
+A link wrapping an image, a title, an optional description and an optional publisher line becomes a `wp:mamaduka/bookmark-card` block, always horizontal, and its images are not uploaded. Blank lines between the parts are fine:
+
+```markdown
+[![](https://site.com/image.jpg)
+
+Article title
+
+One-line summary.
+
+![](https://site.com/favicon.ico)www.site.com](https://site.com/article)
+```
+
+The last line is the publisher only when it is a host name (optionally after a favicon image); otherwise the publisher is the link's host. A plain `[Title](url)` stays a link. For a card to a post on the same site, use `[!BOOKMARK]`.
+
 Images are deduplicated per-article against the media library: before uploading, the script looks up an existing attachment under the article's scoped filename and reuses it if found. Inline image URLs that already point at the target site are reused directly (the existing attachment is resolved by exact `source_url`, with no re-download or re-upload).
 
 ### 5. Embedded Gutenberg blocks (markdown mode)

@@ -662,13 +662,14 @@ class TestImagesInsideText:
         assert "wp:image" not in out
         assert '<a href="https://example.com/"><img src="https://x/a.jpg" alt="a"/></a>' in out
 
-    def test_a_bookmark_card_import_gives_clean_paragraphs(self, converter):
-        # The shape of the imported bookmark cards on payperfax.com: the
-        # blank lines break the link, leaving each image beside text.
+    def test_a_broken_bookmark_card_gives_clean_paragraphs(self, converter):
+        # A bookmark card (see TestBookmarkCards) that lost its closing
+        # "](url)": the blank lines break it apart, leaving each image
+        # beside text.
         md = (
             "[![](https://x/card.jpg)\n\n"
             "Title | site\n\n"
-            "![](https://x/favicon.ico)www.site.de](https://site.de/a)"
+            "![](https://x/favicon.ico)www.site.de"
         )
         out = converter.convert(md)
         assert "\x00" not in out
@@ -709,3 +710,123 @@ class TestDroppedImage:
     def test_a_link_with_its_own_text_stays(self, dropping):
         out = dropping.convert("[see ![x](missing.jpg)](https://e.com/)")
         assert '<a href="https://e.com/">see </a>' in out
+
+
+# ---------------------------------------------------------------------------
+# Bookmark cards (mamaduka/bookmark-card), issue #33
+# ---------------------------------------------------------------------------
+
+# A real card as the news-feed ingest writes it, and the block the editor
+# stored for it on live. Blank lines between the parts are the usual shape.
+CARD_MD = (
+    "[![](https://www.idowa.de/imgs/w766.jpeg)\n"
+    "\n"
+    "Rudolf Hell - der Jahrhundert-Ingenieur aus Eggmühl\n"
+    "\n"
+    "idowa.de informiert Sie zuverlässig über aktuelle Nachrichten\n"
+    "\n"
+    "![](https://www.idowa.de/favicon.ico)www.idowa.de](https://www.idowa.de/inhalt.a23b.html)"
+)
+CARD_BLOCK = (
+    '<!-- wp:mamaduka/bookmark-card {"url":"https://www.idowa.de/inhalt.a23b.html",'
+    '"className":"is-style-horizontal"} -->\n'
+    '<figure class="wp-block-mamaduka-bookmark-card is-style-horizontal">'
+    '<a class="bookmark-card" href="https://www.idowa.de/inhalt.a23b.html">'
+    '<div class="bookmark-card__image"><img src="https://www.idowa.de/imgs/w766.jpeg"/></div>'
+    '<div class="bookmark-card__content">'
+    '<div class="bookmark-card__title">Rudolf Hell - der Jahrhundert-Ingenieur aus Eggmühl</div>'
+    '<div class="bookmark-card__description">idowa.de informiert Sie zuverlässig über aktuelle Nachrichten</div>'
+    '<div class="bookmark_card__meta">'
+    '<img class="bookmark_card__meta-icon" src="https://www.idowa.de/favicon.ico"/>'
+    '<span class="bookmark_card__meta-publisher">www.idowa.de</span>'
+    "</div></div></a></figure>\n"
+    "<!-- /wp:mamaduka/bookmark-card -->"
+)
+
+
+class TestBookmarkCards:
+    def test_a_real_card_becomes_the_block_the_editor_stores(self, converter):
+        assert converter.convert(CARD_MD) == CARD_BLOCK
+
+    def test_a_card_without_blank_lines_is_the_same_card(self, converter):
+        tight = CARD_MD.replace("\n\n", "\n")
+        assert converter.convert(tight) == CARD_BLOCK
+
+    def test_card_images_are_never_uploaded(self):
+        seen = []
+        c = GutenbergConverter(image_handler=lambda url: (seen.append(url), ("x", 1))[1])
+        assert c.convert(CARD_MD) == CARD_BLOCK
+        assert seen == []
+
+    def test_text_around_the_card_stays_paragraphs(self, converter):
+        out = converter.convert(f"Before.\n\n{CARD_MD}\n\nAfter.")
+        assert out == (
+            "<!-- wp:paragraph -->\n<p>Before.</p>\n<!-- /wp:paragraph -->\n\n"
+            f"{CARD_BLOCK}\n\n"
+            "<!-- wp:paragraph -->\n<p>After.</p>\n<!-- /wp:paragraph -->"
+        )
+
+    def test_a_publisher_without_a_favicon(self, converter):
+        out = converter.convert(
+            "[![](https://e.com/i.jpg)\nTitle\nSummary.\nwww.e.com](https://e.com/a)")
+        assert "meta-icon" not in out
+        assert '<span class="bookmark_card__meta-publisher">www.e.com</span>' in out
+        assert '<div class="bookmark-card__description">Summary.</div>' in out
+
+    def test_title_only_takes_the_publisher_from_the_url(self, converter):
+        out = converter.convert("[![](https://e.com/i.jpg)\nJust a title](https://www.e.com/a)")
+        assert '<div class="bookmark-card__title">Just a title</div>' in out
+        assert '<div class="bookmark-card__description"></div>' in out
+        assert '<span class="bookmark_card__meta-publisher">e.com</span>' in out
+
+    def test_no_publisher_line_keeps_every_line_after_the_title(self, converter):
+        out = converter.convert(
+            "[![](https://e.com/i.jpg)\nTitle\nFirst line.\nSecond line.](https://e.com/a)")
+        assert '<div class="bookmark-card__description">First line. Second line.</div>' in out
+        assert '<span class="bookmark_card__meta-publisher">e.com</span>' in out
+
+    def test_image_alt_text_is_dropped(self, converter):
+        out = converter.convert("[![a photo](https://e.com/i.jpg)\nTitle](https://e.com/a)")
+        assert '<img src="https://e.com/i.jpg"/>' in out
+
+    def test_text_is_escaped_like_the_editor_does(self, converter):
+        out = converter.convert(
+            '[![](https://e.com/i.jpg)\nCats & "dogs" <3\nA &amp; B](https://e.com/a?x=1&y=2)')
+        assert '<div class="bookmark-card__title">Cats &amp; "dogs" &lt;3</div>' in out
+        assert '<div class="bookmark-card__description">A &amp; B</div>' in out
+        assert 'href="https://e.com/a?x=1&amp;y=2"' in out
+        assert '{"url":"https://e.com/a?x=1\\u0026y=2"' in out
+
+    def test_a_plain_inline_link_stays_inline(self, converter):
+        out = converter.convert("Read [the article](https://e.com/a) today.")
+        assert "bookmark-card" not in out
+        assert '<a href="https://e.com/a">the article</a>' in out
+
+    def test_a_link_without_an_image_stays_a_link(self, converter):
+        out = converter.convert("[Title\nSummary\ne.com](https://e.com/a)")
+        assert "bookmark-card" not in out
+
+    def test_a_plain_image_is_still_an_image_block(self, converter):
+        out = converter.convert("![alt](https://e.com/i.jpg)")
+        assert "wp:image" in out
+        assert "bookmark-card" not in out
+
+    def test_a_linked_image_is_still_an_image_block(self, converter):
+        out = converter.convert("[![alt](https://e.com/i.jpg)](https://e.com/a)")
+        assert "wp:image" in out
+        assert "bookmark-card" not in out
+
+    def test_an_unclosed_card_is_left_alone(self, converter):
+        out = converter.convert("[![](https://e.com/i.jpg)\n\nTitle\n\nMore text.")
+        assert "bookmark-card" not in out
+        assert "Title" in out and "More text." in out
+
+    def test_an_unclosed_image_link_before_a_later_link_is_not_a_card(self, converter):
+        out = converter.convert(
+            "[![](https://e.com/i.jpg)\n\nTitle\n\nRead [more](https://e.com/b) here](https://e.com/a)")
+        assert "bookmark-card" not in out
+
+    def test_a_card_in_a_code_fence_is_shown_as_code(self, converter):
+        out = converter.convert(f"```\n{CARD_MD}\n```")
+        assert "wp:code" in out
+        assert "wp:mamaduka" not in out
