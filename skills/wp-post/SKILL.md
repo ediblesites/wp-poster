@@ -85,7 +85,7 @@ One-line summary.
 
 The last line is the publisher only when it is a host name (optionally after a favicon image); otherwise the publisher is the link's host. A plain `[Title](url)` stays a link. For a card to a post on the same site, use `[!BOOKMARK]`.
 
-Images are deduplicated per-article against the media library: before uploading, the script looks up an existing attachment under the article's scoped filename and reuses it if found. Inline image URLs that already point at the target site are reused directly (the existing attachment is resolved by exact `source_url`, with no re-download or re-upload).
+Images are deduplicated per-article against the media library: before uploading, the script looks up an existing attachment under the article's scoped filename and reuses it only if it holds the same bytes. An image changed in place (same file name, new bytes) is uploaded again under a name with a hash of its bytes (`<scope>-hero-1a2b3c4d.webp`), so republishing is enough to replace it; the old upload is kept. Inline image URLs that already point at the target site are reused directly (the existing attachment is resolved by exact `source_url`, with no re-download or re-upload).
 
 ### 5. Embedded Gutenberg blocks (markdown mode)
 

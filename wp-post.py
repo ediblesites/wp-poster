@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import argparse
 import base64
 import glob as glob_mod
+import hashlib
 import html
 import json
 import os
@@ -1350,53 +1351,96 @@ class WordPressPost:
         self._media_source_cache[url] = resolved
         return media_id
 
-    def find_existing_media(self, filename, local_size=None):
-        """Look up existing media by filename. Returns (id, source_url) or None.
+    @staticmethod
+    def _versioned_filename(filename, data):
+        """The upload name for these bytes: the file name with a short hash
+        of its content before the extension (hero.webp -> hero-1a2b3c4d.webp).
 
-        Searches the media library for the filename without extension (see
-        _search_media), then keeps only a candidate whose file is exactly the
-        requested filename, so a longer name containing it or the same name
-        with another extension is not treated as a match. A large upload that
-        WordPress scaled down matches by its original file name. When several
-        attachments share the name (copies left by issue #30), the oldest wins
-        so every publish settles on the same one.
-
-        local_size, when given, is compared against the candidate's
-        media_details.filesize. A regenerated image can be written back to
-        disk under the same filename with different bytes (an article's
-        images get re-rendered without changing the target name), and a
-        filename match alone would keep serving the old picture. On a size
-        mismatch, the one attachment this exact filename match identified is
-        force-deleted, and None is returned so the caller's upload takes the
-        name back. A missing remote size, a scaled match (its filesize is the
-        scaled copy's), or no local_size at all (a URL source has none without
-        downloading it), is treated as unchanged - this is a size check, not a
-        hash, so two different files of identical length still read as the same.
+        Changed bytes give a new name, so a regenerated image is uploaded
+        again instead of being matched to the old picture, and its URL
+        changes, so no cache keeps serving the old one (issue #23).
         """
-        stem = os.path.splitext(filename)[0]
+        stem, ext = os.path.splitext(filename)
+        return f"{stem}-{hashlib.sha256(data).hexdigest()[:8]}{ext}"
+
+    @staticmethod
+    def _holds_file(item, filename):
+        """True if the attachment's own file is filename, or it is the
+        scaled-down copy of an upload of that name."""
+        details = item.get('media_details') or {}
+        own = item.get('source_url', '').rsplit('/', 1)[-1]
+        return filename.lower() in (own.lower(), (details.get('original_image') or '').lower())
+
+    def _holds_bytes(self, item, filename, data):
+        """True if the attachment's file named filename has exactly these bytes.
+
+        A size that differs settles it without a download. Otherwise the file
+        is downloaded and compared; for a scaled upload that is the original,
+        which WordPress keeps beside the scaled copy. When the file cannot be
+        downloaded, the attachment is kept, as a filename match was before.
+        """
+        source_url = item.get('source_url', '')
+        details = item.get('media_details') or {}
+        if source_url.rsplit('/', 1)[-1].lower() == filename.lower():
+            url = source_url
+            remote_size = details.get('filesize')
+            if remote_size is not None and remote_size != len(data):
+                return False
+        else:
+            url = f"{source_url.rsplit('/', 1)[0]}/{details['original_image']}"
+        try:
+            response = _request_with_retry('get', url, timeout=30)
+        except requests.RequestException as e:
+            print(f"⚠ Could not download {url} to compare it ({e}); reusing it as is")
+            return True
+        if response.status_code != 200:
+            print(f"⚠ Could not download {url} to compare it ({response.status_code}); reusing it as is")
+            return True
+        return response.content == data
+
+    def find_existing_media(self, filename, data):
+        """Find the attachment that holds these bytes. Returns (id, source_url) or None.
+
+        filename is the scoped name without a content hash. The media library
+        is searched once for it (see _search_media), which also finds every
+        hashed version of it. An upload under the versioned name for these
+        bytes (_versioned_filename) is reused as it is: its name says what
+        it holds. An upload under the plain name, from before names carried
+        a hash, is reused only if its file has these bytes (_holds_bytes).
+        Only a candidate whose file is exactly the name counts, so a longer
+        name containing it or the same name with another extension is not a
+        match. A large upload that WordPress scaled down matches by its
+        original file name. When several attachments share the name (copies
+        left by issue #30), the oldest wins so every publish settles on the
+        same one.
+
+        On None the caller uploads the bytes under the versioned name. An
+        earlier version is never deleted: on a multisite with a shared media
+        library a translation can use the same scoped name, so the old
+        upload can still be in use there.
+        """
+        stem, ext = os.path.splitext(filename)
         if not stem:
             return None
+        versioned = self._versioned_filename(filename, data)
         try:
-            items = self._search_media(stem)
-            for item in sorted(items, key=lambda i: i.get('id', 0)):
-                source_url = item.get('source_url', '')
-                details = item.get('media_details') or {}
-                if source_url.rsplit('/', 1)[-1].lower() == filename.lower():
-                    remote_size = details.get('filesize')
-                elif (details.get('original_image') or '').lower() == filename.lower():
-                    remote_size = None
-                else:
-                    continue
-                if local_size is not None and remote_size is not None and remote_size != local_size:
-                    print(f"⚠ '{filename}' changed size (remote={remote_size}, local={local_size}); replacing id={item['id']}")
-                    requests.delete(
-                        f"{self.api_url}/media/{item['id']}",
-                        auth=self.auth,
-                        params={'force': True},
-                        timeout=30,
-                    )
-                    return None
-                return (item['id'], source_url)
+            items = sorted(self._search_media(stem), key=lambda i: i.get('id', 0))
+            for item in items:
+                if self._holds_file(item, versioned):
+                    return (item['id'], item.get('source_url', ''))
+            for item in items:
+                if self._holds_file(item, filename):
+                    if self._holds_bytes(item, filename, data):
+                        return (item['id'], item.get('source_url', ''))
+                    break
+            version = re.compile(rf'{re.escape(stem)}(-[0-9a-f]{{8}})?{re.escape(ext)}', re.IGNORECASE)
+            earlier = [
+                str(item['id']) for item in items
+                if any(version.fullmatch(name) for name in self._attachment_files(item))
+            ]
+            if earlier:
+                print(f"⚠ '{filename}' has changed; uploading it as {versioned}. "
+                      f"Kept the earlier upload (id={', '.join(earlier)}) in case it is in use")
         except (requests.RequestException, KeyError, ValueError) as e:
             print(f"⚠ Error querying existing media for {filename}: {e}")
         return None
@@ -1412,13 +1456,12 @@ class WordPressPost:
 
         Order of operations:
           1. In-run cache by source path/URL (avoids duplicate work in one run).
-          2. Compute the scoped target filename for this upload.
-          3. Pre-upload lookup via find_existing_media against the target
-             filename (avoids re-creating attachments on republish), passing
-             the local file's size so a same-name match with different bytes
-             is replaced instead of reused.
-          4. Actual upload via the file/URL helper, using the target filename
-             in Content-Disposition.
+          2. Read the source's bytes (a URL source is downloaded).
+          3. Pre-upload lookup via find_existing_media against the scoped
+             filename and these bytes (avoids re-creating attachments on
+             republish, and never reuses one that holds other bytes).
+          4. Actual upload under the scoped filename with a hash of the
+             bytes in it (_versioned_filename).
 
         Returns the media id or None on failure.
         """
@@ -1436,149 +1479,97 @@ class WordPressPost:
             if media_id:
                 return media_id
 
-        # A URL source has no local size without downloading it, so it keeps
-        # relying on the filename match alone, same as before the freshness
-        # check below existed.
-        if filepath_or_url.startswith(('http://', 'https://')):
+        is_url = filepath_or_url.startswith(('http://', 'https://'))
+        if is_url:
             original_filename = os.path.basename(filepath_or_url.split('?')[0])
-            local_size = None
         else:
             original_filename = os.path.basename(filepath_or_url)
-            try:
-                local_size = os.path.getsize(filepath_or_url)
-            except OSError:
-                local_size = None
+        source = self._read_media_source(filepath_or_url, is_url)
+        if not source:
+            return None
+        data, content_type = source
 
         # Apply article scope to derive the target WP filename, and dedup only
         # against the scoped name. Without a scope we cannot safely dedup by
         # filename alone (different articles often share basenames like
         # hero.webp), so the no-scope path uploads fresh without a query.
         # Sources without a usable filename (e.g. https://picsum.photos/400/300)
-        # also skip dedup and upload with the helper's default name.
+        # also skip dedup and upload with a name made from the content type.
         scope = self._current_article_scope
         target_filename = original_filename
         if scope and original_filename and '.' in original_filename:
-            target_filename = f"{scope}-{original_filename}"
-            existing = self.find_existing_media(target_filename, local_size=local_size)
+            scoped_filename = f"{scope}-{original_filename}"
+            existing = self.find_existing_media(scoped_filename, data)
             if existing:
                 media_id, source_url = existing
-                print(f"✓ Reusing existing media: {target_filename} (id={media_id})")
+                print(f"✓ Reusing existing media: {scoped_filename} (id={media_id})")
                 self._media_source_cache[filepath_or_url] = (media_id, source_url)
                 return media_id
+            target_filename = self._versioned_filename(scoped_filename, data)
+        elif not original_filename or '.' not in original_filename:
+            target_filename = self._fallback_filename(content_type)
 
-        if filepath_or_url.startswith(('http://', 'https://')):
-            result = self.upload_media_from_url(filepath_or_url, target_filename=target_filename or None)
-        else:
-            result = self.upload_media_from_file(filepath_or_url, target_filename=target_filename or None)
-
+        result = self._upload_media_bytes(data, target_filename, content_type)
         if result:
             media_id, source_url = result
             self._media_source_cache[filepath_or_url] = (media_id, source_url)
             return media_id
         return None
-    
-    def upload_media_from_url(self, url, target_filename=None):
-        """Upload media from remote URL to WordPress.
 
-        target_filename, when provided, overrides the URL-derived filename
-        (used by upload_media to apply article-scope prefixing).
+    _CONTENT_TYPES = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.pdf': 'application/pdf',
+        '.doc': 'application/msword',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    }
+
+    def _read_media_source(self, filepath_or_url, is_url):
+        """Return (bytes, content_type) for a local file or a URL, or None.
+
+        A local file's content type comes from its extension; a URL's from
+        the response header.
         """
-        try:
-            print(f"Downloading featured image from URL: {url}")
-
-            # Download the image
-            response = requests.get(url, timeout=30)
-            if response.status_code != 200:
-                print(f"✗ Failed to download image from URL: {response.status_code}")
+        if not is_url:
+            if not os.path.exists(filepath_or_url):
+                print(f"Warning: Featured image file '{filepath_or_url}' not found")
                 return None
+            with open(filepath_or_url, 'rb') as f:
+                data = f.read()
+            ext = os.path.splitext(filepath_or_url)[1].lower()
+            return (data, self._CONTENT_TYPES.get(ext, 'application/octet-stream'))
 
-            media_data = response.content
-
-            # Get filename from URL or generate one
-            filename = os.path.basename(url.split('?')[0])  # Remove query params
-            if not filename or '.' not in filename:
-                # Generate filename based on content type
-                content_type = response.headers.get('content-type', '').lower()
-                if 'jpeg' in content_type or 'jpg' in content_type:
-                    filename = 'image.jpg'
-                elif 'png' in content_type:
-                    filename = 'image.png'
-                elif 'gif' in content_type:
-                    filename = 'image.gif'
-                elif 'webp' in content_type:
-                    filename = 'image.webp'
-                else:
-                    filename = 'image.jpg'  # Default
-
-            # Article-scope override - upload_media has already prepended the scope
-            if target_filename:
-                filename = target_filename
-
-            # Get content type
-            content_type = response.headers.get('content-type', 'application/octet-stream')
-
-        except requests.exceptions.RequestException as e:
+        print(f"Downloading featured image from URL: {filepath_or_url}")
+        try:
+            response = _request_with_retry('get', filepath_or_url, timeout=30)
+        except requests.RequestException as e:
             print(f"✗ Error downloading image from URL: {e}")
             return None
+        if response.status_code != 200:
+            print(f"✗ Failed to download image from URL: {response.status_code}")
+            return None
+        return (response.content, response.headers.get('content-type', 'application/octet-stream'))
 
+    @staticmethod
+    def _fallback_filename(content_type):
+        """A file name for a source whose URL has none, from its content type."""
+        content_type = content_type.lower()
+        for marker, name in (('jpeg', 'image.jpg'), ('jpg', 'image.jpg'), ('png', 'image.png'),
+                             ('gif', 'image.gif'), ('webp', 'image.webp')):
+            if marker in content_type:
+                return name
+        return 'image.jpg'
+
+    def _upload_media_bytes(self, data, filename, content_type):
+        """POST bytes to the media library as filename. Returns (id, source_url) or None."""
         headers = {
             'Content-Disposition': f'attachment; filename="{filename}"',
             'Content-Type': content_type
         }
-        
-        print(f"Uploading featured image: {filename}")
 
-        upload_response = requests.post(
-            f"{self.api_url}/media",
-            auth=self.auth,
-            headers=headers,
-            data=media_data,
-            timeout=60
-        )
-        
-        if upload_response.status_code == 201:
-            media_info = upload_response.json()
-            print(f"✓ Featured image uploaded successfully: {media_info['source_url']}")
-            return (media_info['id'], media_info['source_url'])
-        else:
-            print(f"✗ Failed to upload featured image: {upload_response.status_code} - {upload_response.text}")
-            return None
-
-    def upload_media_from_file(self, filepath, target_filename=None):
-        """Upload media from local file to WordPress.
-
-        target_filename, when provided, overrides the basename of filepath
-        (used by upload_media to apply article-scope prefixing).
-        """
-        if not os.path.exists(filepath):
-            print(f"Warning: Featured image file '{filepath}' not found")
-            return None
-
-        with open(filepath, 'rb') as f:
-            media_data = f.read()
-
-        # Determine content type from the SOURCE file's extension (the on-disk
-        # extension is authoritative; target_filename always preserves it).
-        source_ext = os.path.splitext(os.path.basename(filepath))[1].lower()
-        content_type_map = {
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.pdf': 'application/pdf',
-            '.doc': 'application/msword',
-            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        }
-        content_type = content_type_map.get(source_ext, 'application/octet-stream')
-
-        filename = target_filename or os.path.basename(filepath)
-
-        headers = {
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'Content-Type': content_type
-        }
-        
         print(f"Uploading featured image: {filename}")
 
         response = _request_with_retry(
@@ -1586,7 +1577,7 @@ class WordPressPost:
             f"{self.api_url}/media",
             auth=self.auth,
             headers=headers,
-            data=media_data,
+            data=data,
             timeout=60
         )
 

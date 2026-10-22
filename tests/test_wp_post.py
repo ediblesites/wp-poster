@@ -1,6 +1,7 @@
 """Tests for wp-post.py — WordPressPost class and standalone functions."""
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -1621,24 +1622,58 @@ class TestInitNetworkConfig:
 # intentionally a pass-through: filename-only dedup is unsafe across articles
 # because basenames like hero.webp / body-1.webp commonly collide. See
 # ediblesites/wp-poster#5 for the regression that motivates this design.
+#
+# A scoped upload also carries a hash of its bytes in its name (issue #23):
+# my-article-hero.webp uploads as my-article-hero-<8 hex>.webp.
+
+def _versioned(filename, data):
+    """The name wp-post gives an upload of these bytes."""
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}-{hashlib.sha256(data).hexdigest()[:8]}{ext}"
+
+
+def _media_get(search_results, files=None):
+    """A requests.get stand-in: a media search returns search_results, and a
+    GET of a URL in files returns those bytes. Anything else is a 404."""
+    files = files or {}
+
+    def _get(url, **kwargs):
+        resp = MagicMock()
+        if "search" in (kwargs.get("params") or {}):
+            resp.status_code = 200
+            resp.json.return_value = search_results
+        elif url in files:
+            resp.status_code = 200
+            resp.content = files[url]
+            resp.headers = {"content-type": "image/webp"}
+        else:
+            resp.status_code = 404
+        return resp
+    return _get
+
+
+UPLOADS = "https://example.com/wp-content/uploads/2026/04"
+
 
 class TestImageDedup:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
     def test_scoped_dedup_hit_skips_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
-        """When the media library already has a matching scoped attachment, reuse it and skip POST."""
+        """An upload under the versioned name for these bytes is reused with no
+        upload and no download: its name says what it holds."""
         wp._current_article_scope = "my-article"
         img = tmp_path / "hero.webp"
         img.write_bytes(b"webp-bytes")
+        name = _versioned("my-article-hero.webp", b"webp-bytes")
         mock_get.return_value = mock_response(200, [
-            {"id": 42, "slug": "my-article-hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp"},
+            {"id": 42, "slug": "my-article-hero", "source_url": f"{UPLOADS}/{name}"},
         ])
 
         media_id = wp.upload_media(str(img))
 
         assert media_id == 42
         mock_post.assert_not_called()
+        mock_get.assert_called_once()
         get_call = mock_get.call_args
         assert "/wp-json/wp/v2/media" in get_call[0][0]
         assert get_call[1]["params"]["search"] == "my-article-hero"
@@ -1646,14 +1681,15 @@ class TestImageDedup:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
     def test_scoped_dedup_miss_proceeds_with_upload(self, mock_get, mock_post, wp, mock_response, tmp_path):
-        """Empty slug query should fall through and POST a new attachment with the scoped filename."""
+        """Empty search should fall through and POST a new attachment under the
+        scoped, versioned filename."""
         wp._current_article_scope = "my-article"
         img = tmp_path / "fresh.webp"
         img.write_bytes(b"fresh-bytes")
         mock_get.return_value = mock_response(200, [])
         mock_post.return_value = mock_response(201, {
             "id": 99,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-fresh.webp",
+            "source_url": f"{UPLOADS}/my-article-fresh.webp",
         })
 
         media_id = wp.upload_media(str(img))
@@ -1662,7 +1698,9 @@ class TestImageDedup:
         mock_post.assert_called_once()
         # Content-Disposition must use the scoped filename (so WP stores it scoped)
         cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
-        assert 'filename="my-article-fresh.webp"' in cd_header
+        name = _versioned("my-article-fresh.webp", b"fresh-bytes")
+        assert re.fullmatch(r"my-article-fresh-[0-9a-f]{8}\.webp", name)
+        assert f'filename="{name}"' in cd_header
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
@@ -1675,11 +1713,11 @@ class TestImageDedup:
         img.write_bytes(b"jpeg")
         mock_get.return_value = mock_response(200, [
             {"id": 7, "slug": "my-article-shared",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-shared.png"},
+             "source_url": f"{UPLOADS}/my-article-shared.png"},
         ])
         mock_post.return_value = mock_response(201, {
             "id": 88,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-shared.jpg",
+            "source_url": f"{UPLOADS}/my-article-shared.jpg",
         })
 
         media_id = wp.upload_media(str(img))
@@ -1697,7 +1735,7 @@ class TestImageDedup:
         mock_get.return_value = mock_response(200, [])
         mock_post.return_value = mock_response(201, {
             "id": 11,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-once.jpg",
+            "source_url": f"{UPLOADS}/my-article-once.jpg",
         })
 
         first = wp.upload_media(str(img))
@@ -1715,7 +1753,8 @@ class TestImageDedup:
     @patch("wp_post.requests.get")
     def test_no_scope_skips_dedup_query(self, mock_get, mock_post, wp, mock_response, tmp_path):
         """Without an article scope, upload_media must NOT query the media library
-        (filename-only dedup is unsafe across articles). It must just upload."""
+        (filename-only dedup is unsafe across articles). It must just upload,
+        under the file's own name."""
         wp._current_article_scope = None
         img = tmp_path / "loose.jpg"
         img.write_bytes(b"loose")
@@ -1728,6 +1767,7 @@ class TestImageDedup:
 
         assert media_id == 200
         mock_post.assert_called_once()
+        assert 'filename="loose.jpg"' in mock_post.call_args[1]["headers"]["Content-Disposition"]
         # No GET to /media (no dedup lookup) - the safety property
         for call in mock_get.call_args_list:
             assert "/wp-json/wp/v2/media" not in call[0][0]
@@ -1777,7 +1817,7 @@ class TestImageDedup:
         assert mock_get.call_args[1]["params"]["search"] == "fresh-article-hero"
         # And the POST went out with the scoped Content-Disposition filename
         cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
-        assert 'filename="fresh-article-hero.webp"' in cd_header
+        assert f'filename="{_versioned("fresh-article-hero.webp", b"fresh-content")}"' in cd_header
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
@@ -1793,11 +1833,10 @@ class TestImageDedup:
 
         # Compute the scope wp-post will derive from this filepath at publish time
         expected_scope = wp._article_scope_for(path)
-        scoped_slug = f"{expected_scope}-hero"
+        name = _versioned(f"{expected_scope}-hero.jpg", b"hero")
 
         mock_get.return_value = mock_response(200, [
-            {"id": 555, "slug": scoped_slug,
-             "source_url": f"https://example.com/wp-content/uploads/2026/04/{scoped_slug}.jpg"},
+            {"id": 555, "slug": f"{expected_scope}-hero", "source_url": f"{UPLOADS}/{name}"},
         ])
         mock_post.return_value = mock_response(201, {
             "id": 1, "link": "https://example.com/?p=1",
@@ -1839,16 +1878,18 @@ class TestImageDedup:
         The search keeps the name as it is and finds the earlier upload."""
         wp._current_article_scope = "faxonline-app"
         url = "https://cdn.other.com/faxonline.app_.jpg"
-        mock_get.return_value = mock_response(200, [
-            {"id": 10762, "slug": "faxonline-app-faxonline-app_",
-             "source_url": "https://example.com/wp-content/uploads/2026/06/faxonline-app-faxonline.app_.jpg"},
-        ])
+        stored = "https://example.com/wp-content/uploads/2026/06/faxonline-app-faxonline.app_.jpg"
+        mock_get.side_effect = _media_get(
+            [{"id": 10762, "slug": "faxonline-app-faxonline-app_", "source_url": stored}],
+            {url: b"jpg", stored: b"jpg"},
+        )
 
         media_id = wp.upload_media(url)
 
         assert media_id == 10762
         mock_post.assert_not_called()
-        assert mock_get.call_args[1]["params"]["search"] == "faxonline-app-faxonline.app_"
+        searches = [c for c in mock_get.call_args_list if "search" in (c[1].get("params") or {})]
+        assert searches[0][1]["params"]["search"] == "faxonline-app-faxonline.app_"
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
@@ -1860,7 +1901,7 @@ class TestImageDedup:
         img.write_bytes(b"x")
         mock_get.return_value = mock_response(200, [
             {"id": 42, "slug": "my-article-hero-2",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp"},
+             "source_url": f"{UPLOADS}/{_versioned('my-article-hero.webp', b'x')}"},
         ])
 
         assert wp.upload_media(str(img)) == 42
@@ -1874,11 +1915,11 @@ class TestImageDedup:
         img = tmp_path / "hero.webp"
         img.write_bytes(b"x")
         mock_get.return_value = mock_response(200, [
-            {"id": 7, "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero-1.webp"},
-            {"id": 8, "source_url": "https://example.com/wp-content/uploads/2026/04/other-my-article-hero.webp"},
+            {"id": 7, "source_url": f"{UPLOADS}/my-article-hero-1.webp"},
+            {"id": 8, "source_url": f"{UPLOADS}/other-my-article-hero.webp"},
         ])
         mock_post.return_value = mock_response(201, {
-            "id": 9, "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
+            "id": 9, "source_url": f"{UPLOADS}/my-article-hero.webp",
         })
 
         assert wp.upload_media(str(img)) == 9
@@ -1890,13 +1931,15 @@ class TestImageDedup:
         """Copies left by issue #30 share one file name in different months.
         The oldest wins, so every publish settles on the same attachment."""
         wp._current_article_scope = "faxonline-app"
-        mock_get.return_value = mock_response(200, [
+        url = "https://cdn.other.com/faxonline.app_.jpg"
+        oldest = "https://example.com/wp-content/uploads/2026/06/faxonline-app-faxonline.app_.jpg"
+        mock_get.side_effect = _media_get([
             {"id": 11712, "source_url": "https://example.com/wp-content/uploads/2026/10/faxonline-app-faxonline.app_.jpg"},
-            {"id": 10762, "source_url": "https://example.com/wp-content/uploads/2026/06/faxonline-app-faxonline.app_.jpg"},
+            {"id": 10762, "source_url": oldest},
             {"id": 11001, "source_url": "https://example.com/wp-content/uploads/2026/07/faxonline-app-faxonline.app_.jpg"},
-        ])
+        ], {url: b"jpg", oldest: b"jpg"})
 
-        assert wp.upload_media("https://cdn.other.com/faxonline.app_.jpg") == 10762
+        assert wp.upload_media(url) == 10762
         mock_post.assert_not_called()
 
     @patch("wp_post.requests.delete")
@@ -1911,9 +1954,10 @@ class TestImageDedup:
         wp._current_article_scope = "my-article"
         img = tmp_path / "big.jpg"
         img.write_bytes(b"x" * 5000)
+        name = _versioned("my-article-big.jpg", b"x" * 5000)
         mock_get.return_value = mock_response(200, [
-            {"id": 60, "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-big-scaled.jpg",
-             "media_details": {"filesize": 1200, "original_image": "my-article-big.jpg"}},
+            {"id": 60, "source_url": f"{UPLOADS}/{name[:-4]}-scaled.jpg",
+             "media_details": {"filesize": 1200, "original_image": name}},
         ])
 
         assert wp.upload_media(str(img)) == 60
@@ -1922,148 +1966,181 @@ class TestImageDedup:
 
 
 # ===========================================================================
-# Freshness check on a reused scoped attachment (h2gr parity audit 3.2)
+# A changed image is uploaded again (issue #23)
 # ===========================================================================
 #
-# A same-named attachment can hold stale bytes: generate_images-style tools
-# regenerate <slug>-body-1.webp etc. in place under an unchanged filename.
-# find_existing_media compares the candidate's media_details.filesize against
-# the local file's size; on a mismatch it force-deletes that one attachment
-# (already identified by the exact slug= query and the exact filename match)
-# so the upload that follows takes the name back.
+# An image can be regenerated with different bytes under the same file name
+# (a generator rewrites hero.webp in place). A versioned upload carries a hash
+# of its bytes in its name, so changed bytes miss it and upload a new version.
+# An upload from before names carried a hash is reused only if its file has
+# exactly the local bytes: a different size settles it, otherwise the file is
+# downloaded and compared. The earlier upload is never deleted - a translation
+# on a shared media library can use the same scoped name.
 
 class TestImageFreshness:
     @patch("wp_post.requests.delete")
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_stale_size_deletes_and_reuploads(
-        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    def test_changed_size_uploads_new_version_and_keeps_old(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path, capsys
     ):
-        """A same-name attachment whose remote size differs from the local
-        file is stale: it is force-deleted and the new bytes are uploaded
-        under the same name."""
+        """A plain-name upload whose size differs from the local file is out of
+        date: the new bytes go up under a versioned name, nothing is
+        downloaded to compare, and the old upload is kept."""
         wp._current_article_scope = "my-article"
+        data = b"new-bytes-different-length-than-999"
         img = tmp_path / "body-1.webp"
-        img.write_bytes(b"new-bytes-different-length-than-999")
-        mock_get.return_value = mock_response(200, [
-            {"id": 50, "slug": "my-article-body-1",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-body-1.webp",
+        img.write_bytes(data)
+        mock_get.side_effect = _media_get([
+            {"id": 50, "source_url": f"{UPLOADS}/my-article-body-1.webp",
              "media_details": {"filesize": 999}},
         ])
-        mock_delete.return_value = mock_response(200, {"deleted": True})
         mock_post.return_value = mock_response(201, {
-            "id": 51,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-body-1.webp",
+            "id": 51, "source_url": f"{UPLOADS}/{_versioned('my-article-body-1.webp', data)}",
         })
 
-        media_id = wp.upload_media(str(img))
-
-        assert media_id == 51
-        mock_delete.assert_called_once()
-        args, kwargs = mock_delete.call_args
-        assert args[0] == "https://example.com/wp-json/wp/v2/media/50"
-        assert kwargs.get("params") == {"force": True}
-        mock_post.assert_called_once()
-
-    @patch("wp_post.requests.delete")
-    @patch("wp_post.requests.post")
-    @patch("wp_post.requests.get")
-    def test_stale_size_delete_only_touches_exact_filename_match(
-        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
-    ):
-        """The slug query can return an extension mismatch alongside the exact
-        match (same sanitized slug, different file type). Only the exact
-        filename match may be deleted."""
-        wp._current_article_scope = "my-article"
-        img = tmp_path / "hero.webp"
-        img.write_bytes(b"x" * 500)
-        mock_get.return_value = mock_response(200, [
-            {"id": 7, "slug": "my-article-hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.png",
-             "media_details": {"filesize": 999}},
-            {"id": 50, "slug": "my-article-hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
-             "media_details": {"filesize": 999}},
-        ])
-        mock_delete.return_value = mock_response(200, {"deleted": True})
-        mock_post.return_value = mock_response(201, {
-            "id": 51,
-            "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
-        })
-
-        media_id = wp.upload_media(str(img))
-
-        assert media_id == 51
-        mock_delete.assert_called_once()
-        assert mock_delete.call_args[0][0] == "https://example.com/wp-json/wp/v2/media/50"
-
-    @patch("wp_post.requests.delete")
-    @patch("wp_post.requests.post")
-    @patch("wp_post.requests.get")
-    def test_matching_size_reuses_without_delete(
-        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
-    ):
-        """Remote size equals the local file's size: reuse it, delete nothing,
-        upload nothing."""
-        wp._current_article_scope = "my-article"
-        content = b"same-bytes"
-        img = tmp_path / "hero.webp"
-        img.write_bytes(content)
-        mock_get.return_value = mock_response(200, [
-            {"id": 50, "slug": "my-article-hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
-             "media_details": {"filesize": len(content)}},
-        ])
-
-        media_id = wp.upload_media(str(img))
-
-        assert media_id == 50
+        assert wp.upload_media(str(img)) == 51
+        assert mock_get.call_count == 1
+        cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
+        assert f'filename="{_versioned("my-article-body-1.webp", data)}"' in cd_header
         mock_delete.assert_not_called()
-        mock_post.assert_not_called()
+        assert "id=50" in capsys.readouterr().out
 
     @patch("wp_post.requests.delete")
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_unknown_remote_size_reuses_without_delete(
+    def test_same_size_other_bytes_uploads_new_version(
         self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
     ):
-        """No media_details on the candidate: remote size is unknown, so
-        reuse rather than churn."""
+        """Same length, different bytes: the size cannot tell, the download can."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"new!")
+        stored = f"{UPLOADS}/my-article-hero.webp"
+        mock_get.side_effect = _media_get(
+            [{"id": 50, "source_url": stored, "media_details": {"filesize": 4}}],
+            {stored: b"old!"},
+        )
+        mock_post.return_value = mock_response(201, {"id": 51, "source_url": f"{UPLOADS}/x.webp"})
+
+        assert wp.upload_media(str(img)) == 51
+        mock_delete.assert_not_called()
+
+    @patch("wp_post.requests.delete")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_same_bytes_reuses_plain_name_upload(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path
+    ):
+        """A plain-name upload holding exactly the local bytes is reused, so an
+        unchanged image is not uploaded again under a versioned name."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"same-bytes")
+        stored = f"{UPLOADS}/my-article-hero.webp"
+        mock_get.side_effect = _media_get(
+            [{"id": 50, "source_url": stored, "media_details": {"filesize": 10}}],
+            {stored: b"same-bytes"},
+        )
+
+        assert wp.upload_media(str(img)) == 50
+        mock_post.assert_not_called()
+        mock_delete.assert_not_called()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unknown_remote_size_is_compared_by_download(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """No media_details on the candidate: the download decides."""
         wp._current_article_scope = "my-article"
         img = tmp_path / "hero.webp"
         img.write_bytes(b"any-bytes")
-        mock_get.return_value = mock_response(200, [
-            {"id": 50, "slug": "my-article-hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp"},
-        ])
+        stored = f"{UPLOADS}/my-article-hero.webp"
+        mock_get.side_effect = _media_get([{"id": 50, "source_url": stored}], {stored: b"any-bytes"})
 
-        media_id = wp.upload_media(str(img))
-
-        assert media_id == 50
-        mock_delete.assert_not_called()
+        assert wp.upload_media(str(img)) == 50
         mock_post.assert_not_called()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_failed_download_reuses_rather_than_churn(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """When the stored file cannot be downloaded to compare, the upload is
+        kept, as a file name match was before."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"any-bytes")
+        mock_get.side_effect = _media_get([{"id": 50, "source_url": f"{UPLOADS}/my-article-hero.webp"}])
+
+        assert wp.upload_media(str(img)) == 50
+        mock_post.assert_not_called()
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_changed_scaled_upload_compares_its_original(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """A scaled upload's filesize is the scaled copy's, so its original,
+        kept beside it, is downloaded and compared."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "big.jpg"
+        img.write_bytes(b"new" * 2000)
+        mock_get.side_effect = _media_get(
+            [{"id": 60, "source_url": f"{UPLOADS}/my-article-big-scaled.jpg",
+              "media_details": {"filesize": 1200, "original_image": "my-article-big.jpg"}}],
+            {f"{UPLOADS}/my-article-big.jpg": b"old" * 2000},
+        )
+        mock_post.return_value = mock_response(201, {"id": 61, "source_url": f"{UPLOADS}/x.jpg"})
+
+        assert wp.upload_media(str(img)) == 61
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_changed_url_source_uploads_new_version(self, mock_get, mock_post, wp, mock_response):
+        """A URL source is downloaded, so its bytes are compared like a file's."""
+        wp._current_article_scope = "my-article"
+        url = "https://cdn.example.com/hero.webp"
+        stored = f"{UPLOADS}/my-article-hero.webp"
+        mock_get.side_effect = _media_get(
+            [{"id": 50, "source_url": stored, "media_details": {"filesize": 3}}],
+            {url: b"new", stored: b"old"},
+        )
+        mock_post.return_value = mock_response(201, {"id": 51, "source_url": f"{UPLOADS}/x.webp"})
+
+        assert wp.upload_media(url) == 51
+        cd_header = mock_post.call_args[1]["headers"]["Content-Disposition"]
+        assert f'filename="{_versioned("my-article-hero.webp", b"new")}"' in cd_header
 
     @patch("wp_post.requests.delete")
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_url_source_never_treated_as_stale(
-        self, mock_get, mock_post, mock_delete, wp, mock_response
+    def test_second_change_uploads_another_version(
+        self, mock_get, mock_post, mock_delete, wp, mock_response, tmp_path, capsys
     ):
-        """A URL source has no local file to size (no download happens just to
-        size it), so it must keep reusing an exact-name match exactly as
-        before this freshness check existed, regardless of remote size."""
+        """After a versioned upload, a further change misses that version too,
+        uploads a new one and names the kept versions."""
         wp._current_article_scope = "my-article"
-        url = "https://cdn.example.com/hero.webp"
-        mock_get.return_value = mock_response(200, [
-            {"id": 50, "slug": "my-article-hero",
-             "source_url": "https://example.com/wp-content/uploads/2026/04/my-article-hero.webp",
-             "media_details": {"filesize": 999}},
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"third")
+        mock_get.side_effect = _media_get([
+            {"id": 50, "source_url": f"{UPLOADS}/my-article-hero.webp", "media_details": {"filesize": 5}},
+            {"id": 51, "source_url": f"{UPLOADS}/{_versioned('my-article-hero.webp', b'second')}"},
+        ], {f"{UPLOADS}/my-article-hero.webp": b"first"})
+        mock_post.return_value = mock_response(201, {"id": 52, "source_url": f"{UPLOADS}/x.webp"})
+
+        assert wp.upload_media(str(img)) == 52
+        mock_delete.assert_not_called()
+        assert "id=50, 51" in capsys.readouterr().out
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_reverted_image_reuses_its_earlier_version(self, mock_get, mock_post, wp, mock_response, tmp_path):
+        """Going back to bytes uploaded before finds that version by name."""
+        wp._current_article_scope = "my-article"
+        img = tmp_path / "hero.webp"
+        img.write_bytes(b"second")
+        mock_get.side_effect = _media_get([
+            {"id": 51, "source_url": f"{UPLOADS}/{_versioned('my-article-hero.webp', b'second')}"},
+            {"id": 52, "source_url": f"{UPLOADS}/{_versioned('my-article-hero.webp', b'third')}"},
         ])
 
-        media_id = wp.upload_media(url)
-
-        assert media_id == 50
-        mock_delete.assert_not_called()
+        assert wp.upload_media(str(img)) == 51
         mock_post.assert_not_called()
 
 
