@@ -2213,17 +2213,51 @@ def handle_purge(args):
     return 1 if failures else 0
 
 
+_FORMATS = ('raw', 'markdown')
+
+
+class FormatError(ValueError):
+    """The format is not set, or is set to a value that is not a format."""
+
+
 def resolve_format(cli_markdown, cli_raw, frontmatter, config):
-    """Resolve format: CLI > frontmatter > config > default(raw)"""
+    """Resolve format: CLI > frontmatter > config.
+
+    There is no default. A markdown file posted as raw goes live as its
+    source text while the publish reports success (issue #36), so when
+    nothing sets the format, or a value is not raw or markdown, this
+    raises FormatError instead of guessing. An empty value counts as
+    not set.
+    """
     if cli_raw:
         return 'raw'
     if cli_markdown:
         return 'markdown'
-    if frontmatter.get('format') in ('raw', 'markdown'):
-        return frontmatter['format']
-    if config.get('default_format') in ('raw', 'markdown'):
-        return config['default_format']
-    return 'raw'
+    for value, where in ((frontmatter.get('format'), "front matter 'format'"),
+                         (config.get('default_format'), "config 'default_format'")):
+        if value in (None, ''):
+            continue
+        if value not in _FORMATS:
+            raise FormatError(f"Unknown {where} {value!r}")
+        return value
+    raise FormatError("No format set")
+
+
+def resolve_format_or_exit(args, frontmatter, config):
+    """resolve_format for main: on a FormatError, name the file, the ways
+    to set the format and the config file that was read, then exit 1
+    before anything is posted."""
+    try:
+        return resolve_format(args.markdown, args.raw, frontmatter, config)
+    except FormatError as e:
+        active = next((path for _, path, exists in get_config_paths() if exists), None)
+        read = f"read: {active}" if active else f"no config file found from {os.getcwd()}"
+        print(f"Error: {e} for {args.file}.", file=sys.stderr)
+        print("Set the format to raw or markdown with one of:", file=sys.stderr)
+        print("  - the --markdown or --raw flag", file=sys.stderr)
+        print("  - format: markdown|raw in the file's front matter", file=sys.stderr)
+        print(f"  - \"default_format\": \"markdown\"|\"raw\" in the config ({read})", file=sys.stderr)
+        sys.exit(1)
 
 
 def get_config_paths():
@@ -2581,7 +2615,7 @@ format resolution (first match wins):
   1. CLI flags (--raw, --markdown)
   2. Frontmatter 'format' field
   3. Config 'default_format' setting
-  4. Default: raw
+  None of these set: error, nothing is posted
 
 images:
   featured_image in frontmatter uploads to the media library and sets
@@ -2789,10 +2823,10 @@ def main():
                                upload_images=False,
                                locale=resolve_locale_for_file(args.file))
 
-        # Resolve format: CLI > frontmatter > config > default
+        # Resolve format: CLI > frontmatter > config; unset is an error
         config = load_config()
         frontmatter_peek = poster.parse_frontmatter_only(args.file)
-        fmt = resolve_format(args.markdown, args.raw, frontmatter_peek, config)
+        fmt = resolve_format_or_exit(args, frontmatter_peek, config)
 
         if fmt == 'markdown':
             print(f"Converting {args.file} to Gutenberg blocks...")
@@ -2912,9 +2946,9 @@ def main():
     if 'image_align' in config:
         poster.image_align = config['image_align']
 
-    # Resolve format: CLI > frontmatter > config > default
+    # Resolve format: CLI > frontmatter > config; unset is an error
     frontmatter_peek = poster.parse_frontmatter_only(args.file)
-    fmt = resolve_format(args.markdown, args.raw, frontmatter_peek, config)
+    fmt = resolve_format_or_exit(args, frontmatter_peek, config)
 
     print(f"Posting {args.file} to {config['site_url']}...")
     result = poster.post_to_wordpress(

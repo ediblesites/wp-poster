@@ -48,8 +48,8 @@ Content goes here.
 # Markdown content → Gutenberg blocks
 wp-post file.md --markdown
 
-# HTML or raw content → posted as-is (default)
-wp-post file.html
+# HTML or raw content → posted as-is
+wp-post file.html --raw
 
 # Preview without posting
 wp-post file.md --test --markdown
@@ -58,7 +58,7 @@ wp-post file.md --test --markdown
 wp-post file.md --markdown --draft
 ```
 
-Format resolution (first match wins): CLI flags → frontmatter `format:` → config `default_format` → raw.
+Format resolution (first match wins): CLI flags → frontmatter `format:` → config `default_format`. There is no default: when none of these sets it (or a value is not `raw` or `markdown`), wp-post stops with an error and posts nothing, and `--test` stops the same way. Set `format:` in every file you author, or `default_format` in the site's config. The config is found from the current directory, so run wp-post from inside the project.
 
 Use `--test` before the real post when generating new content or converting markdown, to verify the output looks correct.
 

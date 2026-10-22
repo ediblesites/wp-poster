@@ -179,8 +179,81 @@ class TestResolveFormat:
     def test_config_raw(self):
         assert resolve_format(False, False, {}, {"default_format": "raw"}) == "raw"
 
-    def test_default_is_raw(self):
-        assert resolve_format(False, False, {}, {}) == "raw"
+    def test_frontmatter_over_config(self):
+        assert resolve_format(False, False, {"format": "raw"}, {"default_format": "markdown"}) == "raw"
+
+    # Issue #36: no silent raw default.
+
+    def test_nothing_set_is_an_error(self):
+        with pytest.raises(wp_post.FormatError, match="No format set"):
+            resolve_format(False, False, {}, {})
+
+    def test_empty_values_count_as_not_set(self):
+        with pytest.raises(wp_post.FormatError, match="No format set"):
+            resolve_format(False, False, {"format": None}, {"default_format": ""})
+
+    def test_empty_frontmatter_falls_back_to_config(self):
+        assert resolve_format(False, False, {"format": ""}, {"default_format": "markdown"}) == "markdown"
+
+    def test_unknown_frontmatter_value_is_an_error(self):
+        # Not "No format set": the value is shown, and the config is not
+        # consulted, since the file asked for something specific.
+        with pytest.raises(wp_post.FormatError, match="front matter 'format' 'md'"):
+            resolve_format(False, False, {"format": "md"}, {"default_format": "markdown"})
+
+    def test_unknown_config_value_is_an_error(self):
+        with pytest.raises(wp_post.FormatError, match="config 'default_format' 'Markdown'"):
+            resolve_format(False, False, {}, {"default_format": "Markdown"})
+
+    def test_flag_wins_over_unknown_value(self):
+        assert resolve_format(True, False, {"format": "md"}, {}) == "markdown"
+
+
+class TestMainFormatUnset:
+    """main() stops before posting when no format is set (issue #36)."""
+
+    def _run(self, argv, tmp_path, capsys, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\n## Heading", encoding="utf-8")
+        with patch("sys.argv", ["wp-post", *argv, str(f)]), \
+                patch("wp_post.load_config", return_value={
+                    "site_url": "https://example.com", "username": "u", "app_password": "p"}), \
+                patch.object(wp_post, "get_config_paths", return_value=[]), \
+                patch.object(wp_post.WordPressPost, "post_to_wordpress") as mock_post_to_wp:
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        return exc.value.code, capsys.readouterr(), mock_post_to_wp, str(f)
+
+    def test_publish_exits_one_and_posts_nothing(self, tmp_path, capsys, monkeypatch):
+        code, out, mock_post_to_wp, path = self._run([], tmp_path, capsys, monkeypatch)
+        assert code == 1
+        mock_post_to_wp.assert_not_called()
+        assert f"No format set for {path}" in out.err
+        assert "--markdown or --raw" in out.err
+        assert "format: markdown|raw" in out.err
+        assert f"no config file found from {tmp_path}" in out.err
+        assert out.out == ""
+
+    def test_test_mode_reports_the_same_error(self, tmp_path, capsys, monkeypatch):
+        code, out, _, path = self._run(["--test"], tmp_path, capsys, monkeypatch)
+        assert code == 1
+        assert f"No format set for {path}" in out.err
+        assert "Heading" not in out.out
+
+    def test_error_names_the_config_that_was_read(self, tmp_path, capsys, monkeypatch):
+        config = tmp_path / ".wp-poster.json"
+        monkeypatch.setattr(wp_post, "get_config_paths",
+                            lambda: [("User global", tmp_path / "missing.json", False),
+                                     ("Local project", config, True)])
+        monkeypatch.chdir(tmp_path)
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        with patch("sys.argv", ["wp-post", "--test", str(f)]), \
+                patch("wp_post.load_config", return_value={}):
+            with pytest.raises(SystemExit):
+                wp_post.main()
+        assert f"read: {config}" in capsys.readouterr().err
 
 
 # ===========================================================================
@@ -2581,7 +2654,7 @@ class TestMainMslsExit:
         self, mock_load_config, mock_post_to_wp, tmp_path, capsys
     ):
         f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        f.write_text("---\ntitle: T\nformat: raw\n---\nbody", encoding="utf-8")
         mock_load_config.return_value = {
             "site_url": "https://example.com", "username": "u", "app_password": "p",
         }
@@ -2605,7 +2678,7 @@ class TestMainMslsExit:
         self, mock_load_config, mock_post_to_wp, tmp_path, capsys
     ):
         f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        f.write_text("---\ntitle: T\nformat: raw\n---\nbody", encoding="utf-8")
         mock_load_config.return_value = {
             "site_url": "https://example.com", "username": "u", "app_password": "p",
         }
@@ -2633,7 +2706,7 @@ class TestMainSchemaFailureExit:
         self, mock_load_config, mock_post_to_wp, tmp_path, capsys
     ):
         f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        f.write_text("---\ntitle: T\nformat: raw\n---\nbody", encoding="utf-8")
         mock_load_config.return_value = {
             "site_url": "https://example.com", "username": "u", "app_password": "p",
         }
@@ -2660,7 +2733,7 @@ class TestMainSchemaFailureExit:
         self, mock_load_config, mock_post_to_wp, tmp_path, capsys
     ):
         f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        f.write_text("---\ntitle: T\nformat: raw\n---\nbody", encoding="utf-8")
         mock_load_config.return_value = {
             "site_url": "https://example.com", "username": "u", "app_password": "p",
         }
@@ -2683,7 +2756,7 @@ class TestMainSchemaFailureExit:
     ):
         """A publish with BOTH kinds of failure surfaces both and exits 1 once."""
         f = tmp_path / "post.md"
-        f.write_text("---\ntitle: T\n---\nbody", encoding="utf-8")
+        f.write_text("---\ntitle: T\nformat: raw\n---\nbody", encoding="utf-8")
         mock_load_config.return_value = {
             "site_url": "https://example.com", "username": "u", "app_password": "p",
         }

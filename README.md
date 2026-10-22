@@ -138,18 +138,20 @@ Use `--verbose` or `-v` for detailed debug output.
 
 ## Format
 
-Content is posted raw by default. Use `format` frontmatter or `--markdown` flag for Gutenberg conversion.
+The format is required: `markdown` converts the file to Gutenberg blocks, `raw` posts it as-is. There is no default. When no flag, frontmatter `format` or config `default_format` sets it, wp-post stops before posting (and `--test` stops too) with an error naming the file and the config file it read, because a markdown file posted raw goes live as literal `## Heading` and `**bold**`. A value other than `raw` or `markdown` (say `md`) is an error as well. A site that wants a default sets `default_format` in its `.wp-poster.json`.
+
+The config is found from the directory you run wp-post in, not from the file's location (see Config File Locations), so run it from inside the project for its `default_format` to apply.
 
 ### Precedence
 
-Command line flags override frontmatter, which overrides config file defaults:
+Command line flags override frontmatter, which overrides the config file's default:
 
 | Source | Example | Notes |
 |--------|---------|-------|
-| Default | raw | content posted as-is |
 | Config | `"default_format": "markdown"` | set in `.wp-poster.json` |
 | Frontmatter | `format: markdown` | per-file setting |
 | CLI | `--markdown` / `--raw` | overrides all above |
+| None of these | - | error, nothing is posted |
 
 ```bash
 # File has format: markdown, but post raw anyway

@@ -110,7 +110,8 @@ Images are deduplicated per-article against the media library (and same-site URL
 1. CLI flags (`--raw`, `--markdown`)
 2. Frontmatter `format` field
 3. Config `default_format` setting
-4. Default: `raw`
+
+None of these set, or a value other than `raw`/`markdown`: error, nothing is posted.
 
 ## Date formats
 
