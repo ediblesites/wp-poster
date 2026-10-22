@@ -114,6 +114,7 @@ author: username|user_id           # overrides config author_context
 post_type: post|page|custom-post-type
 template: template-name            # page template (for pages)
 parent: 123                        # parent post ID (for hierarchical types)
+menu_order: 3                      # order (types with page-attributes); others warn
 featured_image: path/to/image.jpg  # relative to cwd, or https://...
 categories: [Cat1, Cat2]           # posts only, auto-created if missing
 tags: [tag1, tag2]                 # posts only, auto-created if missing

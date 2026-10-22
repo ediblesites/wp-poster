@@ -351,6 +351,22 @@ class WordPressPost:
             )
         return dropped
 
+    def _warn_if_menu_order_dropped(self, post_data, post):
+        """Warn if WordPress ignored the menu_order that was sent.
+
+        Only a post type that supports page-attributes has menu_order in
+        its REST schema; any other type ignores the field without an error
+        and leaves it out of the response. Never fails the publish.
+        """
+        if 'menu_order' not in post_data or 'menu_order' in post:
+            return False
+        print(
+            "⚠ menu_order was dropped by WordPress. This post type does not "
+            "support page-attributes, so the REST API ignored it.",
+            file=sys.stderr,
+        )
+        return True
+
     @staticmethod
     def _bookmark_slug(target):
         """Reduce a slug, /path/, or full URL to its final path segment.
@@ -874,6 +890,11 @@ class WordPressPost:
         if 'parent' in frontmatter:
             post_data['parent'] = frontmatter['parent']
 
+        # Handle menu order (types with page-attributes). A bare `menu_order:`
+        # sends nothing, so an update keeps the order the post already has.
+        if frontmatter.get('menu_order') not in (None, ''):
+            post_data['menu_order'] = frontmatter['menu_order']
+
         # Handle author (frontmatter overrides config)
         author = frontmatter.get('author', author_context)
         if author:
@@ -1013,6 +1034,7 @@ class WordPressPost:
             post_id = post['id']
             self._warn_if_svg_stripped(post_data.get('content', ''), post)
             self._warn_if_meta_dropped(post_data.get('meta'), post)
+            self._warn_if_menu_order_dropped(post_data, post)
 
             # Handle Rank Math SEO meta via dedicated API.
             rankmath_meta = dict(frontmatter.get('rankmath', {}))

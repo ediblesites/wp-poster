@@ -16,6 +16,7 @@ author: username|user_id       # overrides config author_context
 post_type: post|page|custom    # default: post
 template: template-name        # page template (hierarchical types only)
 parent: 123                    # parent post ID (hierarchical types only)
+menu_order: 3                  # order (types with page-attributes only)
 
 featured_image: path/to/img.jpg  # local path (relative to cwd) or https:// URL
                                  # uploaded to WordPress media library
@@ -74,6 +75,7 @@ translation_set: about-us       # MSLS translation group key (multisite only)
 | `post_type`      | string        | no       | `post`, `page`, or any custom post type slug           |
 | `template`       | string        | no       | Only for pages/hierarchical types                      |
 | `parent`         | integer       | no       | Only for hierarchical types                            |
+| `menu_order`     | integer       | no       | Types with page-attributes; others warn. Empty: unset  |
 | `featured_image` | string        | no       | Local file path or URL; uploaded to media library      |
 | `categories`     | list          | no       | Posts only; auto-created if they don't exist           |
 | `tags`           | list          | no       | Posts only; auto-created if they don't exist           |

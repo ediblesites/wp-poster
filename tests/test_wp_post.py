@@ -3624,6 +3624,56 @@ class TestSvgStrippingDetection:
         assert capsys.readouterr().err == ""
 
 
+class TestMenuOrder:
+    """menu_order is sent when set, and warned about when the type ignores it (issue #35)."""
+
+    def _publish(self, mock_post, md_file, mock_response, wp, frontmatter, response_extra=None):
+        path = md_file({"title": "T", **frontmatter}, "body")
+        mock_post.return_value = mock_response(201, {
+            "id": 1, "link": "https://example.com/?p=1",
+            "title": {"rendered": "T"}, **(response_extra or {}),
+        })
+        result = wp.post_to_wordpress(path, raw=True)
+        return result, mock_post.call_args_list[0][1]["json"]
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_sent_and_quiet_when_stored(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, sent = self._publish(
+            mock_post, md_file, mock_response, wp,
+            {"post_type": "page", "menu_order": 3}, {"menu_order": 3},
+        )
+        assert result["success"] is True
+        assert sent["menu_order"] == 3
+        assert "menu_order" not in capsys.readouterr().err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_zero_is_sent(self, mock_get, mock_post, wp, md_file, mock_response):
+        _, sent = self._publish(mock_post, md_file, mock_response, wp, {"menu_order": 0}, {"menu_order": 0})
+        assert sent["menu_order"] == 0
+
+    @pytest.mark.parametrize("frontmatter", [{}, {"menu_order": None}, {"menu_order": ""}])
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_absent_or_empty_sends_nothing(self, mock_get, mock_post, frontmatter, wp, md_file, mock_response, capsys):
+        # An update must not reset an existing order to 0.
+        _, sent = self._publish(mock_post, md_file, mock_response, wp, frontmatter)
+        assert "menu_order" not in sent
+        assert "menu_order" not in capsys.readouterr().err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unsupported_type_warns_but_succeeds(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        # A type without page-attributes leaves menu_order out of its response.
+        result, sent = self._publish(mock_post, md_file, mock_response, wp, {"menu_order": 2})
+        assert result["success"] is True
+        assert sent["menu_order"] == 2
+        err = capsys.readouterr().err
+        assert err.count("menu_order") >= 1
+        assert "page-attributes" in err
+
+
 class TestMetaDropDetection:
     """WordPress silently drops meta keys not registered with show_in_rest."""
 
