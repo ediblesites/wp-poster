@@ -832,15 +832,39 @@ class TestDescriptionOverwriteWarning:
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
-    def test_trimmed_excerpt_fallback_is_quiet(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
-        excerpt = "word " * 60
+    def test_trimmed_excerpt_fallback_is_quiet_but_recorded(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        # A hand-shortened excerpt has the same shape as Rank Math's fallback
+        # trim, so the exemption prints nothing but leaves a record that
+        # cannot be read as an overwrite (ORC-2197).
+        excerpt = ("word " * 60).strip()
+        live = ("word " * 31).strip()
         result, _, err = self._publish(
             wp, md_file, mock_response, mock_get, mock_post, capsys,
-            {"title": "T", "id": 42, "excerpt": excerpt.strip()},
-            page=("word " * 31).strip() + "...",
+            {"title": "T", "id": 42, "excerpt": excerpt},
+            page=live + "...",
         )
         assert err == ""
-        assert "description_overwrite" not in result
+        assert result["description_overwrite"] == {
+            "post_id": 42, "checked": True, "suppressed": "fallback_prefix",
+            "live": live + "...", "excerpt": excerpt,
+        }
+        assert _rankmath_payload(mock_post)["meta"]["rank_math_description"] == excerpt
+
+    def test_suppressed_record_reaches_the_final_json_line(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        f = tmp_path / "post.md"
+        f.write_text("---\ntitle: T\nformat: raw\n---\nbody", encoding="utf-8")
+        record = {"post_id": 42, "checked": True, "suppressed": "fallback_prefix",
+                  "live": "a b", "excerpt": "a b c"}
+        with patch("sys.argv", ["wp-post", str(f)]), \
+                patch("wp_post.load_config", return_value={
+                    "site_url": "https://example.com", "username": "u", "app_password": "p"}), \
+                patch.object(wp_post.WordPressPost, "post_to_wordpress", return_value={
+                    "success": True, "id": 42, "title": "T", "url": _LIVE_LINK,
+                    "description_overwrite": record}):
+            wp_post.main()  # no SystemExit: the exit code is unchanged
+        last = capsys.readouterr().out.strip().splitlines()[-1]
+        assert json.loads(last)["description_overwrite"] == record
 
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
