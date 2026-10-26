@@ -919,6 +919,83 @@ class TestDescriptionOverwriteWarning:
         assert capsys.readouterr().err == ""
 
 
+class TestRefusedTemplatePostTypes:
+    """Block-theme templates are refused on the front matter value, before
+    any request, and every other post type publishes as before."""
+
+    @pytest.mark.parametrize("post_type", [
+        "wp_template", "wp_template_part", "templates", "template-parts", "WP_Template",
+    ])
+    @patch("wp_post.requests.put")
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_refused_before_any_request(self, mock_get, mock_post, mock_put, post_type,
+                                        wp, md_file, capsys):
+        path = md_file({"title": "Archive", "post_type": post_type, "id": 470,
+                        "slug": "archive-integration"}, "<!-- wp:query-title /-->")
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result is None
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+        mock_put.assert_not_called()
+        err = capsys.readouterr().err
+        assert f"post_type: {post_type}, which wp-post will not publish" in err
+        assert "Site Editor" in err
+        assert "Nothing was posted." in err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_markdown_refused_before_image_upload(self, mock_get, mock_post, wp, tmp_path):
+        image = tmp_path / "hero.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        f = tmp_path / "part.md"
+        f.write_text("---\ntitle: Header\npost_type: wp_template_part\n---\n![x](hero.png)\n",
+                     encoding="utf-8")
+        with patch.object(wp_post.WordPressPost, "upload_media") as mock_upload:
+            assert wp.post_to_wordpress(str(f), raw=False) is None
+        mock_upload.assert_not_called()
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_main_exits_one_with_the_message(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        f = tmp_path / "index.md"
+        f.write_text("---\ntitle: Integrations\npost_type: wp_template\nid: 470\n"
+                     "format: raw\n---\n<!-- wp:query-title /-->", encoding="utf-8")
+        with patch("sys.argv", ["wp-post", str(f)]), \
+                patch("wp_post.load_config", return_value={
+                    "site_url": "https://example.com", "username": "u", "app_password": "p"}), \
+                patch("wp_post.requests.post") as mock_post, \
+                patch("wp_post.requests.get") as mock_get:
+            with pytest.raises(SystemExit) as exc:
+                wp_post.main()
+        assert exc.value.code == 1
+        mock_post.assert_not_called()
+        mock_get.assert_not_called()
+        assert "post_type: wp_template, which wp-post will not publish" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("post_type,endpoint", [
+        (None, "/wp-json/wp/v2/posts"),
+        ("post", "/wp-json/wp/v2/posts"),
+        ("page", "/wp-json/wp/v2/pages"),
+        ("integration", "/wp-json/wp/v2/integration"),
+    ])
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_other_types_publish_unchanged(self, mock_get, mock_post, post_type, endpoint,
+                                           wp, md_file, mock_response):
+        fm = {"title": "T"}
+        if post_type:
+            fm["post_type"] = post_type
+        path = md_file(fm, "body")
+        mock_post.return_value = mock_response(201, {
+            "id": 20, "link": "https://example.com/?p=20", "title": {"rendered": "T"},
+        })
+        result = wp.post_to_wordpress(path, raw=True)
+        assert result["success"] is True
+        assert mock_post.call_args[0][0] == f"https://example.com{endpoint}"
+
+
 class TestPostFailure:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
