@@ -759,6 +759,166 @@ class TestExcerptRankMathReconcile:
         assert _rankmath_payload(mock_post) is None
 
 
+_LIVE_LINK = "https://example.com/existing-page/"
+
+
+def _page_html(description):
+    if description is None:
+        return "<html><head><title>T</title></head><body></body></html>"
+    return (
+        '<html><head><title>T</title>'
+        f'<meta name="description" content="{description}"/>'
+        '</head><body></body></html>'
+    )
+
+
+class TestDescriptionOverwriteWarning:
+    """An excerpt-driven publish that replaces a different live meta
+    description says so before the Rank Math write (ORC-2185). The write
+    itself is unchanged: the excerpt is still sent."""
+
+    def _publish(self, wp, md_file, mock_response, mock_get, mock_post, capsys,
+                 frontmatter, page=None, page_status=200, post_status="publish", get_exc=None):
+        path = md_file(frontmatter, "body")
+        page_gets = []
+
+        def get(url, *a, **kw):
+            if url.startswith(_LIVE_LINK):
+                page_gets.append(url)
+                assert "auth" not in kw, "the live page is read anonymously"
+                if get_exc:
+                    raise get_exc
+                return mock_response(page_status, text=_page_html(page))
+            raise AssertionError(f"unexpected GET {url}")
+
+        mock_get.side_effect = get
+        mock_post.side_effect = [
+            mock_response(200, {"id": 42, "link": _LIVE_LINK, "status": post_status,
+                                "title": {"rendered": "T"}}),
+            mock_response(200),  # rankmath updateMeta
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        return result, page_gets, capsys.readouterr().err
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_divergent_live_description_warns_and_still_writes(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, gets, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "Repo excerpt text"},
+            page="Tuned in wp-admin",
+        )
+        assert len(gets) == 1 and "wp_post_nocache=" in gets[0]
+        assert "will be overwritten with the excerpt" in err
+        assert "post 42" in err and "test_post.md" in err
+        assert '"Tuned in wp-admin"' in err and '"Repo excerpt text"' in err
+        assert result["description_overwrite"] == {
+            "post_id": 42, "checked": True,
+            "live": "Tuned in wp-admin", "excerpt": "Repo excerpt text",
+        }
+        assert _rankmath_payload(mock_post)["meta"]["rank_math_description"] == "Repo excerpt text"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_equal_after_entity_decoding_is_quiet(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, gets, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "We&#8217;re  here &amp; ready"},
+            page="We\u2019re here &amp;amp; ready",
+        )
+        assert len(gets) == 1
+        assert err == ""
+        assert "description_overwrite" not in result
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_trimmed_excerpt_fallback_is_quiet(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        excerpt = "word " * 60
+        result, _, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": excerpt.strip()},
+            page=("word " * 31).strip() + "...",
+        )
+        assert err == ""
+        assert "description_overwrite" not in result
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_no_live_description_is_quiet(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, gets, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "Repo excerpt text"},
+            page=None,
+        )
+        assert len(gets) == 1
+        assert err == ""
+        assert "description_overwrite" not in result
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unreadable_page_says_the_check_did_not_run(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, _, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "Repo excerpt text"},
+            page_status=403,
+        )
+        assert "Could not read the live meta description of post 42" in err
+        assert "HTTP 403" in err
+        assert result["description_overwrite"] == {"post_id": 42, "checked": False, "error": "HTTP 403"}
+        assert _rankmath_payload(mock_post)["meta"]["rank_math_description"] == "Repo excerpt text"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_connection_error_says_the_check_did_not_run(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        import requests as real_requests
+        result, _, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "Repo excerpt text"},
+            get_exc=real_requests.ConnectionError("down"),
+        )
+        assert "ConnectionError" in err
+        assert result["success"] is True
+        assert result["description_overwrite"]["checked"] is False
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_unpublished_post_is_not_read(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, gets, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "Repo excerpt text"},
+            page="Tuned in wp-admin", post_status="draft",
+        )
+        assert gets == [] and err == ""
+        assert "description_overwrite" not in result
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_explicit_description_is_not_read(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        result, gets, err = self._publish(
+            wp, md_file, mock_response, mock_get, mock_post, capsys,
+            {"title": "T", "id": 42, "excerpt": "Repo excerpt text",
+             "rankmath": {"description": "Pinned"}},
+            page="Tuned in wp-admin",
+        )
+        assert gets == [] and err == ""
+        assert _rankmath_payload(mock_post)["meta"]["rank_math_description"] == "Pinned"
+
+    @patch("wp_post.requests.post")
+    @patch("wp_post.requests.get")
+    def test_new_post_is_not_read(self, mock_get, mock_post, wp, md_file, mock_response, capsys):
+        path = md_file({"title": "T", "excerpt": "Repo excerpt text"}, "body")
+        mock_get.return_value = mock_response(200, [])  # slug adoption lookup: no match
+        mock_post.side_effect = [
+            mock_response(201, {"id": 7, "link": _LIVE_LINK, "status": "publish",
+                                "title": {"rendered": "T"}}),
+            mock_response(200),
+        ]
+        result = wp.post_to_wordpress(path, raw=True)
+        assert not any(c[0] and c[0][0].startswith(_LIVE_LINK) for c in mock_get.call_args_list)
+        assert "description_overwrite" not in result
+        assert capsys.readouterr().err == ""
+
+
 class TestPostFailure:
     @patch("wp_post.requests.post")
     @patch("wp_post.requests.get")
