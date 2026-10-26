@@ -921,6 +921,13 @@ class WordPressPost:
             self._current_article_dir = None
 
     def _do_post_to_wordpress(self, filepath, draft, raw, author_context, verbose):
+        # Checked on the front matter before parsing: a markdown parse
+        # uploads inline images, which is already a write.
+        post_type = read_frontmatter(filepath).get('post_type', 'posts')
+        if refused_post_type(post_type):
+            print(refused_post_type_message(filepath, post_type), file=sys.stderr)
+            return None
+
         if raw:
             frontmatter, content = self.parse_raw_file(filepath)
             if verbose:
@@ -1978,6 +1985,39 @@ class PurgeConfigError(Exception):
     """
 
 
+# Block-theme templates and template parts are site layout, not content. A
+# republish of a stale mirror would overwrite a live template's block markup,
+# so these are refused before anything is written. Both the post type names
+# and their REST route names are listed: `post_type: templates` would
+# otherwise reach the live /wp/v2/templates route as a custom type.
+REFUSED_POST_TYPES = {
+    'wp_template': 'templates',
+    'wp_template_part': 'template-parts',
+}
+
+
+def refused_post_type(post_type):
+    """The post type a publish is refused for, or None when it may go ahead."""
+    value = str(post_type).strip().lower()
+    for name, rest_base in REFUSED_POST_TYPES.items():
+        if value in (name, rest_base):
+            return name
+    return None
+
+
+def refused_post_type_message(filepath, post_type):
+    """The error printed when a file's post_type is a refused one."""
+    name = refused_post_type(post_type)
+    return (
+        f"Error: {filepath} has post_type: {post_type}, which wp-post will not publish.\n"
+        f"{name} is a block-theme template, part of the site layout, not content. "
+        f"Publishing it would replace the live template's block markup, so a stale "
+        f"copy breaks every page that uses it.\n"
+        f"Edit it in the Site Editor (Appearance > Editor), or with wp on the server "
+        f"(for example: wp post update <id> --post_content=...). Nothing was posted."
+    )
+
+
 def read_frontmatter(filepath):
     """Parse just the frontmatter of a file, returning {} when it has none."""
     with open(filepath, 'r', encoding='utf-8') as f:
@@ -2682,6 +2722,8 @@ frontmatter fields:
   slug            URL slug
   excerpt         Post excerpt
   post_type       post, page, or custom post type (default: post)
+                  wp_template and wp_template_part are refused: edit
+                  templates in the Site Editor or with wp on the server
   format          raw or markdown (see format resolution below)
   date            Publish date in ISO 8601 format
   author          Username or user ID (overrides config author_context)
