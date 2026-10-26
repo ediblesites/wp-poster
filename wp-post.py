@@ -411,10 +411,12 @@ class WordPressPost:
         Rank Math write: the post update does not touch
         rank_math_description, so a fresh render still shows the stored
         override if there is one, and when there is none Rank Math falls
-        back to the excerpt just sent, which compares equal (or as a
-        truncated prefix) and stays quiet. Only published posts are
-        checked; anything else has no live page to read. Returns a dict
-        describing the overwrite, or None. Never fails the publish.
+        back to the excerpt just sent, which compares equal and stays
+        quiet. A live value that is a trimmed prefix of the excerpt also
+        prints nothing, but is returned with `suppressed: 'fallback_prefix'`
+        so it leaves a trace. Only published posts are checked; anything
+        else has no live page to read. Returns a dict describing the
+        overwrite (or the suppressed case), or None. Never fails the publish.
         """
         if post.get('status') != 'publish' or not post.get('link'):
             return None
@@ -432,11 +434,17 @@ class WordPressPost:
         excerpt_text = self._meta_description_text(excerpt)
         if not live_text or live_text == excerpt_text:
             return None
-        # Rank Math's own fallback trims the excerpt; a trimmed copy of the
-        # excerpt is that fallback, not an override.
+        # A trimmed copy of the excerpt is taken to be Rank Math's own
+        # fallback truncation, not an override, so it prints nothing. That is
+        # a hypothesis about Rank Math, and a hand-shortened excerpt in
+        # wp-admin has the same shape, so the case is still recorded, under
+        # `suppressed`, which a reader must not count as an overwrite.
         trimmed = live_text.rstrip('.… ').rstrip()
         if trimmed and len(trimmed) < len(excerpt_text) and excerpt_text.startswith(trimmed):
-            return None
+            return {
+                'post_id': post_id, 'checked': True, 'suppressed': 'fallback_prefix',
+                'live': live_text, 'excerpt': excerpt_text,
+            }
 
         def head(text):
             return text if len(text) <= 120 else text[:117] + '...'
