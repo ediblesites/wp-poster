@@ -368,6 +368,92 @@ class WordPressPost:
         return True
 
     @staticmethod
+    def _meta_description_text(value):
+        """Decode entities and collapse whitespace, so the front matter's
+        `&#8217;` and the page's `&#039;` compare by what a reader sees."""
+        return ' '.join(html.unescape(html.unescape(value or '')).split())
+
+    def _live_meta_description(self, link):
+        """Read the meta description a fresh render of `link` serves.
+
+        Rank Math has no REST read for rank_math_description and does not
+        expose it in the post's `meta`, so the page itself is the only
+        place to read it. Fetched anonymously with a cache-busting query
+        so the edge cache cannot answer with a render from before this
+        publish. Returns (description, None) - description is '' when the
+        page has no meta description tag - or (None, reason) when the
+        page could not be read.
+        """
+        sep = '&' if '?' in link else '?'
+        url = f"{link}{sep}wp_post_nocache={time.time_ns()}"
+        try:
+            response = requests.get(url, timeout=15)
+        except requests.RequestException as e:
+            return None, type(e).__name__
+        if response.status_code != 200:
+            return None, f"HTTP {response.status_code}"
+        for tag in re.findall(r'<meta\b[^>]*>', response.text or '', re.I):
+            name = re.search(r'\bname\s*=\s*(["\'])(.*?)\1', tag, re.I | re.S)
+            if not name or name.group(2).strip().lower() != 'description':
+                continue
+            content = re.search(r'\bcontent\s*=\s*(["\'])(.*?)\1', tag, re.I | re.S)
+            return (content.group(2) if content else ''), None
+        return '', None
+
+    def _warn_if_description_overwritten(self, filepath, post, excerpt):
+        """Warn before the excerpt replaces a different live meta description.
+
+        Under this tool's local-first model the excerpt is pushed to
+        rank_math_description whenever the front matter has no explicit
+        rankmath.description (issue #13), so a description tuned in
+        wp-admin is overwritten on the next publish. That is intended; doing
+        it without a word is not. Runs after the post update and before the
+        Rank Math write: the post update does not touch
+        rank_math_description, so a fresh render still shows the stored
+        override if there is one, and when there is none Rank Math falls
+        back to the excerpt just sent, which compares equal (or as a
+        truncated prefix) and stays quiet. Only published posts are
+        checked; anything else has no live page to read. Returns a dict
+        describing the overwrite, or None. Never fails the publish.
+        """
+        if post.get('status') != 'publish' or not post.get('link'):
+            return None
+        live, error = self._live_meta_description(post['link'])
+        post_id = post.get('id')
+        if error:
+            print(
+                f"⚠ Could not read the live meta description of post {post_id} "
+                f"({filepath}): {error}. rank_math_description will be set to "
+                f"the excerpt without checking what it replaces.",
+                file=sys.stderr,
+            )
+            return {'post_id': post_id, 'checked': False, 'error': error}
+        live_text = self._meta_description_text(live)
+        excerpt_text = self._meta_description_text(excerpt)
+        if not live_text or live_text == excerpt_text:
+            return None
+        # Rank Math's own fallback trims the excerpt; a trimmed copy of the
+        # excerpt is that fallback, not an override.
+        trimmed = live_text.rstrip('.… ').rstrip()
+        if trimmed and len(trimmed) < len(excerpt_text) and excerpt_text.startswith(trimmed):
+            return None
+
+        def head(text):
+            return text if len(text) <= 120 else text[:117] + '...'
+
+        print(
+            f"⚠ The live meta description of post {post_id} ({filepath}) will be "
+            f"overwritten with the excerpt.\n"
+            f"    live:    \"{head(live_text)}\"\n"
+            f"    excerpt: \"{head(excerpt_text)}\"\n"
+            f"  The live value differs from the excerpt, usually because it was "
+            f"edited in wp-admin. To keep it, copy it into rankmath.description "
+            f"in the front matter and publish again.",
+            file=sys.stderr,
+        )
+        return {'post_id': post_id, 'checked': True, 'live': live_text, 'excerpt': excerpt_text}
+
+    @staticmethod
     def _bookmark_slug(target):
         """Reduce a slug, /path/, or full URL to its final path segment.
 
@@ -1070,7 +1156,10 @@ class WordPressPost:
             has_explicit_description = (
                 'description' in rankmath_meta or 'rank_math_description' in rankmath_meta
             )
+            description_overwrite = None
             if excerpt and not has_explicit_description:
+                if post_id_in_file:
+                    description_overwrite = self._warn_if_description_overwritten(filepath, post, excerpt)
                 rankmath_meta['description'] = excerpt
             if rankmath_meta:
                 self.update_rankmath_meta(post_id, rankmath_meta, verbose=verbose)
@@ -1107,6 +1196,10 @@ class WordPressPost:
             # Same reasoning for schema-write failures (issue #24).
             if schema_failure:
                 result['schema_failure'] = schema_failure
+            # A replaced live description is reported, not failed: the write
+            # is the intended local-first behaviour (issue #13).
+            if description_overwrite:
+                result['description_overwrite'] = description_overwrite
             return result
         else:
             error_msg = response.text
@@ -2979,6 +3072,10 @@ def main():
             summary['msls_failures'] = msls_failures
         if schema_failure:
             summary['schema_failure'] = schema_failure
+        # Reported in the machine-readable output so a caller sees it after
+        # the stderr warning has scrolled past; not a failure, no exit code.
+        if result.get('description_overwrite'):
+            summary['description_overwrite'] = result['description_overwrite']
         print(json.dumps(summary))
         if msls_failures or schema_failure:
             sys.exit(1)
