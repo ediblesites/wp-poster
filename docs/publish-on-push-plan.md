@@ -205,6 +205,11 @@ On a SpinupWP test site (single site, WordPress 7.1.3), on 2026-10-26:
 | A file in `files/.content/`              | Blocked (403)                                                    |
 | Temporary `*.spinupwp.site` domain       | Certificate not trusted, so REST calls fail; needs a real domain |
 
+The site lives in `/sites/<domain>/`, and WordPress is in
+`/sites/<domain>/files/`, which is also the web root. The nginx rule that
+blocks dot paths was not inspected, because the site user cannot read
+`/etc/nginx`; the 403 above comes from requests only.
+
 ## Open questions
 
 - [ ] Webhook listener or 1-minute cron? Cron is less code; the listener only
