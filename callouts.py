@@ -336,8 +336,11 @@ _CALLOUT_RE = re.compile(
 _FAQ_QUESTION_RE = re.compile(r"^\*\*(.+?)\*\*[ \t]*$", re.MULTILINE)
 
 
-def _split_faq(body, warn=None):
-    """Split an FAQ body into (preamble, [(question, answer_markdown), ...]).
+def _split_faq_spans(body, warn=None):
+    """Split an FAQ body into (preamble, [(question, start, end), ...]).
+
+    Each answer is given as its span body[start:end], so a caller that
+    tracks offsets into `body` can map them onto the answer.
 
     A question is a line consisting solely of bold text, and only opens a
     new question when it is the first line of the body or is preceded by
@@ -380,7 +383,7 @@ def _split_faq(body, warn=None):
         if not answer.strip():
             warn(f'[!FAQ] question "{question}" has no answer; skipped')
             continue
-        pairs.append((question, answer))
+        pairs.append((question, start, end))
     return preamble, pairs
 
 
@@ -504,6 +507,35 @@ def _bookmark_body(data, cfg):
     return "".join(parts)
 
 
+def _extract_block_quote(block, m, state):
+    """Return (text, end_pos, lazy_line_starts) on every mistune version.
+
+    mistune 3.3 added a third value: the offsets in `text` where a lazy
+    continuation line starts, which the child state needs so such a line
+    is not read as a setext heading underline. Before 3.3 there is no
+    such set, so an empty one stands in for it.
+    """
+    result = block.extract_block_quote(m, state)
+    if len(result) == 3:
+        return result
+    text, end_pos = result
+    return text, end_pos, set()
+
+
+def _child_state(state, src, lazy_line_starts, start=0):
+    """Child state for src = text[start:start + len(src)].
+
+    `lazy_line_starts` are offsets into the whole block quote text; only
+    the ones inside src are kept, made relative to it. The keyword is
+    passed only when there are offsets, which mistune before 3.3 never
+    produces, so its child_state() is never given an argument it lacks.
+    """
+    lazy = {pos - start for pos in lazy_line_starts if start <= pos < start + len(src)}
+    if lazy:
+        return state.child_state(src, lazy_line_starts=lazy)
+    return state.child_state(src)
+
+
 def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
     """Build a mistune plugin rendering callouts with this configuration.
 
@@ -516,24 +548,32 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
 
     def parse(block, m, state):
         """Replace the block_quote parser; emit callout or block_quote."""
-        text, end_pos = block.extract_block_quote(m, state)
+        text, end_pos, lazy_line_starts = _extract_block_quote(block, m, state)
         if not text.endswith("\n"):
             text += "\n"
 
         matched = _CALLOUT_RE.match(text)
         if state.depth() >= block.max_nested_level - 1:
-            rules = list(block.block_quote_rules)
-            rules.remove("block_quote")
+            # At the nesting limit, stop descending into any container
+            # block. Removing only block_quote still let quotes and lists
+            # nest into each other without bound (RecursionError); mistune
+            # 3.3 made the same fix in its own block quote parser.
+            rules = [
+                rule
+                for rule in block.block_quote_rules
+                if rule not in ("block_quote", "list")
+            ]
         else:
             rules = block.block_quote_rules
 
         if not matched:
-            child = state.child_state(text)
+            child = _child_state(state, text, lazy_line_starts)
             block.parse(child, rules)
             token = {"type": "block_quote", "children": child.tokens, "attrs": {}}
         else:
             name = matched.group(1).lower()
-            body = text[matched.end():]
+            body_start = matched.end()
+            body = text[body_start:]
 
             if name == "bookmark":
                 token = {
@@ -548,13 +588,13 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
                 return state.cursor
 
             if name == "faq":
-                preamble, pairs = _split_faq(body, warn=_warn)
+                preamble, pairs = _split_faq_spans(body, warn=_warn)
                 if not pairs:
                     _warn(
                         "[!FAQ] callout has no questions (no **question** "
                         "lines found); rendering its body as ordinary content"
                     )
-                    child = state.child_state(body)
+                    child = _child_state(state, body, lazy_line_starts, body_start)
                     block.parse(child, rules)
                     children = child.tokens
                 else:
@@ -564,8 +604,13 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
                             "it was dropped"
                         )
                     children = []
-                    for question, answer in pairs:
-                        item_state = state.child_state(answer)
+                    for question, start, end in pairs:
+                        item_state = _child_state(
+                            state,
+                            body[start:end],
+                            lazy_line_starts,
+                            body_start + start,
+                        )
                         block.parse(item_state, rules)
                         children.append(
                             {
@@ -575,7 +620,7 @@ def callout_plugin(config=None, bookmark_resolver=None, warn=None, locale=None):
                             }
                         )
             else:
-                child = state.child_state(body)
+                child = _child_state(state, body, lazy_line_starts, body_start)
                 block.parse(child, rules)
                 children = child.tokens
 
