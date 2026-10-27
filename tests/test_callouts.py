@@ -1,5 +1,6 @@
 """Tests for callouts.py - configuration, colour resolution, and rendering."""
 
+import mistune
 import pytest
 
 import callouts
@@ -284,10 +285,16 @@ class TestSimpleCallouts:
         assert attrs["style"]["border"]["left"]["style"] == "solid"
 
 
+def split_faq(body, warn=None):
+    """_split_faq_spans with each answer span sliced out as text."""
+    preamble, spans = callouts._split_faq_spans(body, warn=warn)
+    return preamble, [(question, body[start:end]) for question, start, end in spans]
+
+
 class TestFaqSplitting:
     def test_splits_two_pairs(self):
         body = "**First question?**\nFirst answer.\n\n**Second question?**\nSecond answer.\n"
-        preamble, pairs = callouts._split_faq(body)
+        preamble, pairs = split_faq(body)
         assert preamble.strip() == ""
         assert len(pairs) == 2
         assert pairs[0][0] == "First question?"
@@ -295,13 +302,13 @@ class TestFaqSplitting:
         assert pairs[1][0] == "Second question?"
 
     def test_no_questions_returns_body_as_preamble(self):
-        preamble, pairs = callouts._split_faq("Just prose.\n")
+        preamble, pairs = split_faq("Just prose.\n")
         assert pairs == []
         assert preamble.strip() == "Just prose."
 
     def test_text_before_first_question_is_preamble(self):
         body = "Intro line.\n\n**A question?**\nAn answer.\n"
-        preamble, pairs = callouts._split_faq(body)
+        preamble, pairs = split_faq(body)
         assert "Intro line." in preamble
         assert len(pairs) == 1
 
@@ -311,7 +318,7 @@ class TestFaqSplitting:
             "**Note:**\n"
             "This is important context inside the answer.\n"
         )
-        preamble, pairs = callouts._split_faq(body)
+        preamble, pairs = split_faq(body)
         assert len(pairs) == 1
         assert pairs[0][0] == "Real question?"
         assert "**Note:**" in pairs[0][1]
@@ -319,18 +326,44 @@ class TestFaqSplitting:
 
     def test_question_at_start_of_body_is_detected(self):
         body = "**Only question?**\nOnly answer.\n"
-        preamble, pairs = callouts._split_faq(body)
+        preamble, pairs = split_faq(body)
         assert len(pairs) == 1
         assert pairs[0][0] == "Only question?"
 
     def test_empty_answer_is_skipped_and_warns(self):
         body = "**Empty question?**\n\n**Real question?**\nAn answer.\n"
         warnings = []
-        preamble, pairs = callouts._split_faq(body, warn=warnings.append)
+        preamble, pairs = split_faq(body, warn=warnings.append)
         assert len(pairs) == 1
         assert pairs[0][0] == "Real question?"
         assert len(warnings) == 1
         assert "no answer" in warnings[0].lower()
+
+
+_MISTUNE_HAS_LAZY_LINES = tuple(int(n) for n in mistune.__version__.split(".")[:2]) >= (3, 3)
+
+
+class TestMistuneCompatibility:
+    """The block quote parser is replaced, so it has to keep up with mistune's."""
+
+    @pytest.mark.parametrize("prefix", ["> - ", "- > "])
+    def test_deep_quote_and_list_nesting_does_not_recurse_without_bound(self, prefix):
+        result = convert(prefix * 200 + "x\n")
+        assert "x" in result
+
+    @pytest.mark.skipif(not _MISTUNE_HAS_LAZY_LINES, reason="mistune < 3.3 has no lazy line tracking")
+    @pytest.mark.parametrize(
+        "md",
+        [
+            "> foo\n===\n",
+            "> [!NOTE]\n> foo\n===\n",
+            "> [!FAQ]\n> **Q?**\n> foo\n===\n",
+        ],
+    )
+    def test_lazy_continuation_line_is_not_a_setext_underline(self, md):
+        result = convert(md)
+        assert "wp:heading" not in result
+        assert "===" in result
 
 
 class TestFaqRendering:
