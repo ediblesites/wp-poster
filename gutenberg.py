@@ -478,6 +478,7 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         self._videos = []
         self._images = []
         self.leftover_emphasis = []
+        self._heading_ids = {}
 
     # ------------------------------------------------------------------
     # Block-level overrides
@@ -536,11 +537,32 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         # Emitting it anyway still renders correctly but is not what the
         # editor writes, so a round trip through the editor would rewrite it.
         block_attrs = "" if level == 2 else f' {{"level":{level}}}'
+        # Every heading gets an id so "#section" links in the article
+        # resolve. The block's anchor attribute is sourced from the id in
+        # the HTML, so the comment needs no "anchor" key.
+        anchor = self._heading_id(text)
+        id_attr = f' id="{anchor}"' if anchor else ""
         return (
             f"<!-- wp:heading{block_attrs} -->\n"
-            f'<h{level} class="wp-block-heading">{text}</h{level}>\n'
+            f'<h{level} class="wp-block-heading"{id_attr}>{text}</h{level}>\n'
             f"<!-- /wp:heading -->\n\n"
         )
+
+    def _heading_id(self, text):
+        """GitHub-style slug of the heading text, unique within the post.
+
+        "## The Browser Fallback" gives "the-browser-fallback"; a second
+        heading with the same text gives "the-browser-fallback-1".
+        """
+        from html import unescape
+        plain = unescape(re.sub(r"<[^>]+>", "", text)).lower()
+        slug = re.sub(r"[^\w\- ]", "", plain).strip().replace(" ", "-")
+        slug = re.sub(r"-{2,}", "-", slug).strip("-")
+        if not slug:
+            return ""
+        seen = self._heading_ids.get(slug, 0)
+        self._heading_ids[slug] = seen + 1
+        return slug if seen == 0 else f"{slug}-{seen}"
 
     def block_code(self, code, info=None):
         from html import escape as html_escape
@@ -777,6 +799,7 @@ class GutenbergConverter:
         )
 
         self._renderer.leftover_emphasis = []
+        self._renderer._heading_ids = {}
         raw = self._renderer.inline_images(self._md(text))
         self._warn_leftover_emphasis(markdown_content, line_offset)
 
