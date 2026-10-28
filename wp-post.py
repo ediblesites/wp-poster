@@ -209,6 +209,7 @@ class WordPressPost:
             bookmark_resolver=self._resolve_bookmark if self._resolve_bookmarks else None,
             locale=self._locale,
             image_align=self.image_align,
+            warn=lambda m: print(f"⚠ {filepath}: {m}", file=sys.stderr),
         )
         blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 

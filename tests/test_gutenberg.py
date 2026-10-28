@@ -1,5 +1,6 @@
 """Tests for gutenberg.py — GutenbergConverter."""
 
+import mistune
 import pytest
 
 from gutenberg import GutenbergConverter, youtube_id
@@ -830,3 +831,128 @@ class TestBookmarkCards:
         out = converter.convert(f"```\n{CARD_MD}\n```")
         assert "wp:code" in out
         assert "wp:mamaduka" not in out
+
+
+# ---------------------------------------------------------------------------
+# Emphasis next to punctuation (issue #43)
+# ---------------------------------------------------------------------------
+
+_MISTUNE_HAS_FLANKING_RULE = tuple(int(n) for n in mistune.__version__.split(".")[:2]) >= (3, 3)
+
+
+class TestEmphasisNextToPunctuation:
+    """mistune 3.3+ follows CommonMark here; wp-post keeps the 3.2 output."""
+
+    @pytest.mark.parametrize(
+        "md, html",
+        [
+            ("**Rates:**Before.", "<strong>Rates:</strong>Before."),
+            ("**Fragen?**Kontaktieren Sie uns", "<strong>Fragen?</strong>Kontaktieren Sie uns"),
+            ("**簡潔な回答：**確認します", "<strong>簡潔な回答：</strong>確認します"),
+            ("**연락처(예시)**를", "<strong>연락처(예시)</strong>를"),
+            ("**Rates:** Before.", "<strong>Rates:</strong> Before."),
+            ("*note:*x", "<em>note:</em>x"),
+            ("a**(b)**c", "a<strong>(b)</strong>c"),
+            ("「**重要**」です", "「<strong>重要</strong>」です"),
+            ("**a.**", "<strong>a.</strong>"),
+        ],
+    )
+    def test_star_emphasis_closes_and_opens_next_to_punctuation(self, converter, md, html):
+        assert f"<p>{html}</p>" in converter.convert(md)
+
+    @pytest.mark.parametrize(
+        "md, html",
+        [
+            # The same output as 3.2, where CommonMark nests or stays literal.
+            ('a**"foo"**', "a<strong>\"foo\"</strong>"),
+            ("**(**foo)", "<strong>(</strong>foo)"),
+            ("*(*foo*)*", "<em>(</em>foo<em>)</em>"),
+        ],
+    )
+    def test_matches_mistune_3_2_where_it_differs_from_commonmark(self, converter, md, html):
+        assert f"<p>{html}</p>" in converter.convert(md)
+
+    def test_underscore_keeps_mistunes_rule(self, converter):
+        assert "<p>__a:__b</p>" in converter.convert("__a:__b")
+
+    def test_whitespace_still_stops_emphasis(self, converter):
+        assert "<p>** a**</p>" in converter.convert("** a**")
+        assert "<p>2 * 3 * 4</p>" in converter.convert("2 * 3 * 4")
+
+
+@pytest.mark.skipif(not _MISTUNE_HAS_FLANKING_RULE, reason="mistune < 3.3 has no flanking rule to replace")
+class TestFlankingPatchGuard:
+    """The rule is replaced in mistune's private module, so a move must fail loudly."""
+
+    def test_the_patch_target_exists_on_this_mistune(self):
+        from mistune._inline import emphasis
+        GutenbergConverter()
+        assert emphasis._can_open_emphasis._wp_poster
+        assert emphasis._can_close_emphasis._wp_poster
+
+    def test_a_missing_function_is_an_error(self, monkeypatch):
+        from mistune._inline import emphasis
+        monkeypatch.delattr(emphasis, "_can_close_emphasis")
+        monkeypatch.setattr(emphasis, "_can_open_emphasis", lambda text, start, size, marker: True)
+        with pytest.raises(RuntimeError, match="#43"):
+            GutenbergConverter()
+
+    def test_a_changed_signature_is_an_error(self, monkeypatch):
+        from mistune._inline import emphasis
+        monkeypatch.setattr(emphasis, "_can_open_emphasis", lambda text, start: True)
+        with pytest.raises(RuntimeError, match="#43"):
+            GutenbergConverter()
+
+
+class TestLeftoverEmphasisWarning:
+    """A `*` pair that reaches the page as literal text is reported, not posted silently."""
+
+    @pytest.fixture
+    def commonmark_rule(self, monkeypatch):
+        """Put a strict closing rule back, as an unpatched mistune 3.3+ would."""
+        if not _MISTUNE_HAS_FLANKING_RULE:
+            pytest.skip("mistune < 3.3 has no flanking rule to replace")
+        from mistune._inline import emphasis
+        warnings = []
+        converter = GutenbergConverter(warn=warnings.append)
+        original = emphasis._can_close_emphasis
+
+        def strict(text, start, size, marker):
+            previous = text[start - 1] if start > 0 else "\n"
+            following = text[start + size] if start + size < len(text) else "\n"
+            if not previous.isalnum() and following.isalnum():
+                return False
+            return original(text, start, size, marker)
+
+        monkeypatch.setattr(emphasis, "_can_close_emphasis", strict)
+        return converter, warnings
+
+    def test_literal_pair_is_reported_with_its_line(self, commonmark_rule):
+        converter, warnings = commonmark_rule
+        out = converter.convert("Intro.\n\n**Rates:**Before.", line_offset=4)
+        assert "**Rates:**Before." in out
+        assert warnings == ["line 7: **Rates:** shows as literal asterisks, not bold or italic"]
+
+    def test_repeated_pair_is_reported_on_each_line(self, commonmark_rule):
+        converter, warnings = commonmark_rule
+        converter.convert("**a:**b\n\n**a:**b")
+        assert [w.split(":")[0] for w in warnings] == ["line 1", "line 3"]
+
+    def test_rendered_emphasis_is_not_reported(self):
+        warnings = []
+        GutenbergConverter(warn=warnings.append).convert("**Rates:**Before. *x* and **y**")
+        assert warnings == []
+
+    @pytest.mark.parametrize(
+        "md",
+        [
+            r"\*\*escaped\*\*",
+            "`**code**`",
+            "```\n**Rates:**Before.\n```",
+            "2 * 3 * 4",
+        ],
+    )
+    def test_intended_asterisks_are_not_reported(self, md):
+        warnings = []
+        GutenbergConverter(warn=warnings.append).convert(md)
+        assert warnings == []

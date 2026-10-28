@@ -167,7 +167,7 @@ wp-post my-file.md
 ### Supported Markdown
 
 - **Headings**: `# ## ###`
-- **Text**: **bold**, *italic*, ~~strikethrough~~
+- **Text**: **bold**, *italic*, ~~strikethrough~~. Bold and italic with `*` work next to punctuation, as in `**Rates:**Before.` or `**簡潔な回答：**確認します`, although CommonMark leaves those literal. A `*` pair that still reaches the page as literal asterisks prints a warning with its line number.
 - **Lists**: ordered (1. 2. 3.) and unordered (- * +) with nesting
 - **Links**: `[text](url)`
 - **Images**: `![alt](path)` and `![alt](url "caption")` — see [Images](#images) below

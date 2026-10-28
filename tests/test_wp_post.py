@@ -4693,3 +4693,13 @@ class TestTestModeIsOffline:
         out = self._run_test_mode(tmp_path, capsys, "![l](local.jpg)\n")
         assert '<img src="local.jpg" alt="l"/>' in out
         assert "<p></p>" not in out
+
+
+class TestConverterWarnings:
+    def test_a_converter_warning_names_the_file(self, wp, md_file, capsys):
+        path = md_file({"title": "T"}, "body")
+        with patch("wp_post.GutenbergConverter") as converter_cls:
+            converter_cls.return_value.convert.return_value = ""
+            wp.parse_markdown_file(path)
+        converter_cls.call_args.kwargs["warn"]("line 3: **a:** shows as literal asterisks")
+        assert capsys.readouterr().err == f"⚠ {path}: line 3: **a:** shows as literal asterisks\n"
