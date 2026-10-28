@@ -11,6 +11,7 @@ YOUTUBE_HOSTS and embed_block() below for the accepted URL shapes and the
 block markup this produces.
 """
 
+import inspect
 import json
 import re
 from urllib.parse import parse_qs, urlsplit
@@ -20,7 +21,7 @@ from mistune.plugins.footnotes import footnotes
 from mistune.plugins.formatting import strikethrough
 from mistune.plugins.table import table
 
-from callouts import callout_plugin
+from callouts import _default_warn, callout_plugin
 
 
 # Marker image() leaves in place of each image. Whether an image becomes a
@@ -47,6 +48,70 @@ _WP_BLOCK_COMMENT_RE = re.compile(
     r"(?:\s+\{.*?\})?\s*(?P<self_close>/)?-->",
     re.IGNORECASE,
 )
+
+
+# A pair of `*` or `**` around text that is still in a text node after
+# parsing, so it reached the page as literal asterisks. See
+# _restore_star_flanking() and issue #43.
+_LEFTOVER_EMPHASIS = re.compile(r"\*{1,2}[^\s*][^*]*?(?<=[^\s*])\*{1,2}")
+
+
+def _restore_star_flanking():
+    """Let `*` and `**` open and close next to punctuation, as before 3.3.
+
+    mistune 3.3 started to follow CommonMark's flanking rule: a closing
+    `**` after punctuation must be followed by whitespace or punctuation,
+    so `**Rates:**Before.` and `**簡潔な回答：**確認します` stay literal.
+    Content was written against the older behaviour, and CJK text has no
+    space to put there, so for `*` only whitespace decides; `_` keeps
+    mistune's rule, which 3.2 had too.
+
+    The rule lives in private functions with no plugin hook, so they are
+    replaced in place; the parser looks them up by name on every call.
+    Before 3.3 there is nothing to replace. From 3.3 on, a missing
+    function or a changed signature is an error, not a silent fallback
+    to CommonMark, since a mistune upgrade would otherwise change pages
+    without notice. Calling this more than once is harmless.
+    """
+    version = tuple(int(n) for n in mistune.__version__.split(".")[:2])
+    if version < (3, 3):
+        return
+    try:
+        from mistune._inline import emphasis
+        can_open = emphasis._can_open_emphasis
+        can_close = emphasis._can_close_emphasis
+    except (ImportError, AttributeError) as e:
+        raise RuntimeError(
+            f"mistune {mistune.__version__} moved its emphasis flanking rule "
+            f"({e}); wp-post cannot restore bold and italic next to "
+            f"punctuation. See issue #43."
+        ) from e
+    if getattr(can_open, "_wp_poster", False):
+        return
+    expected = ["text", "start", "size", "marker"]
+    for func in (can_open, can_close):
+        params = list(inspect.signature(func).parameters)
+        if params != expected:
+            raise RuntimeError(
+                f"mistune {mistune.__version__} changed {func.__name__} to "
+                f"({', '.join(params)}); wp-post cannot restore bold and "
+                f"italic next to punctuation. See issue #43."
+            )
+
+    def _open(text, start, size, marker):
+        if marker == "_":
+            return can_open(text, start, size, marker)
+        end = start + size
+        return end < len(text) and not text[end].isspace()
+
+    def _close(text, start, size, marker):
+        if marker == "_":
+            return can_close(text, start, size, marker)
+        return start > 0 and not text[start - 1].isspace()
+
+    _open._wp_poster = _close._wp_poster = True
+    emphasis._can_open_emphasis = _open
+    emphasis._can_close_emphasis = _close
 
 
 def _extract_raw_gutenberg(text, line_offset=0):
@@ -412,6 +477,7 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         self.image_align = image_align
         self._videos = []
         self._images = []
+        self.leftover_emphasis = []
 
     # ------------------------------------------------------------------
     # Block-level overrides
@@ -569,6 +635,7 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         # Escaping them to &quot; breaks WordPress shortcodes carrying
         # quoted attributes (e.g. [np-image entity="smtp2go"]).
         from mistune.util import escape
+        self.leftover_emphasis.extend(_LEFTOVER_EMPHASIS.findall(text))
         return escape(text, quote=False)
 
     # Table plugin overrides are standalone functions — see _GUTENBERG_TABLE_*
@@ -658,7 +725,7 @@ class GutenbergConverter:
 
     def __init__(self, image_handler=None, callout_config=None,
                  bookmark_resolver=None, locale=None,
-                 image_align=DEFAULT_IMAGE_ALIGN):
+                 image_align=DEFAULT_IMAGE_ALIGN, warn=None):
         """
         Initialize converter.
 
@@ -671,7 +738,11 @@ class GutenbergConverter:
                           a plain link card without a network request.
             locale: Optional WordPress locale ("de_DE", "ja") selecting the
                           callout label language. None means English.
+            warn: Optional callable(message) for problems that do not stop
+                          the conversion. None prints them on stderr.
         """
+        _restore_star_flanking()
+        self._warn = warn or _default_warn
         self._renderer = GutenbergRenderer(image_handler=image_handler,
                                            image_align=image_align)
 
@@ -705,7 +776,9 @@ class GutenbergConverter:
             markdown_content, line_offset=line_offset
         )
 
+        self._renderer.leftover_emphasis = []
         raw = self._renderer.inline_images(self._md(text))
+        self._warn_leftover_emphasis(markdown_content, line_offset)
 
         # Collapse runs of blank lines and trim, then re-join blocks
         # with double-newlines for Gutenberg spacing.
@@ -726,3 +799,23 @@ class GutenbergConverter:
                 result = result.replace(sentinel, block)
 
         return result
+
+    def _warn_leftover_emphasis(self, markdown_content, line_offset):
+        """Warn about each `*` pair that reached the page as literal text.
+
+        A pair the source does not hold verbatim came from escapes such as
+        `\\*\\*`, which the author wrote on purpose, so it is skipped.
+        """
+        lines = markdown_content.split("\n")
+        # A snippet seen again is looked for after the line it last matched.
+        searched_to = {}
+        for snippet in self._renderer.leftover_emphasis:
+            start = searched_to.get(snippet, 0)
+            for index in range(start, len(lines)):
+                if snippet in lines[index]:
+                    searched_to[snippet] = index + 1
+                    self._warn(
+                        f"line {index + 1 + line_offset}: {snippet} shows as "
+                        f"literal asterisks, not bold or italic"
+                    )
+                    break
