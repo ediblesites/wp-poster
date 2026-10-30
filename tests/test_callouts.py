@@ -787,10 +787,11 @@ class TestResolveLang:
     def test_bare_language_locale(self):
         assert callouts.resolve_lang("ja") == "ja"
 
-    def test_traditional_chinese_falls_back_to_the_language(self):
-        # No zh_tw entry ships, so zh_TW takes Simplified. The two-step
-        # lookup means adding one later needs no resolver change.
-        assert callouts.resolve_lang("zh_TW") == "zh"
+    def test_traditional_chinese_takes_its_own_table(self):
+        # The full locale is tried before the prefix, so zh_TW gets
+        # Traditional and a bare zh_CN still gets Simplified.
+        assert callouts.resolve_lang("zh_TW") == "zh_tw"
+        assert callouts.resolve_lang("zh_CN") == "zh"
 
     def test_unknown_language_warns_and_uses_english(self):
         warnings = []
@@ -813,9 +814,10 @@ class TestLabelTable:
         for lang, labels in callouts._LABELS.items():
             assert set(labels) == set(callouts.CALLOUT_TYPES), lang
 
-    def test_all_eleven_languages_ship(self):
+    def test_all_twelve_tables_ship(self):
         assert set(callouts._LABELS) == {
-            "en", "de", "es", "fr", "it", "ja", "ko", "zh", "th", "ar", "he"
+            "en", "de", "es", "fr", "it", "ja", "ko", "zh", "zh_tw", "th",
+            "ar", "he",
         }
 
     def test_spot_checks(self):
@@ -826,6 +828,8 @@ class TestLabelTable:
         assert callouts._LABELS["ja"]["note"] == "注記"
         # Avviso reads as "notice"; Avvertenza carries the warning sense.
         assert callouts._LABELS["it"]["warning"] == "Avvertenza"
+        # Traditional, not Simplified: 備註, not 备注.
+        assert callouts._LABELS["zh_tw"]["note"] == "備註"
 
 
 class TestMergeConfigLocale:

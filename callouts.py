@@ -184,6 +184,13 @@ _LABELS = {
         "warning": "警告", "caution": "注意", "summary": "摘要",
         "faq": "常见问题", "bookmark": "延伸阅读",
     },
+    # Traditional Chinese for Taiwan. resolve_lang tries zh_tw before zh,
+    # so a zh_TW site no longer takes the Simplified labels.
+    "zh_tw": {
+        "note": "備註", "tip": "提示", "important": "重要",
+        "warning": "警告", "caution": "注意", "summary": "摘要",
+        "faq": "常見問題", "bookmark": "延伸閱讀",
+    },
     "th": {
         "note": "หมายเหตุ", "tip": "เคล็ดลับ", "important": "สำคัญ",
         "warning": "คำเตือน", "caution": "ข้อควรระวัง", "summary": "สรุป",
