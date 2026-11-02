@@ -1,5 +1,7 @@
 """Tests for gutenberg.py — GutenbergConverter."""
 
+import re
+
 import mistune
 import pytest
 
@@ -80,7 +82,7 @@ class TestHeadings:
     def test_h1(self, converter):
         result = converter.convert("# Title")
         assert "wp:heading" in result
-        assert '<h1 class="wp-block-heading">Title</h1>' in result
+        assert '<h1 class="wp-block-heading" id="title">Title</h1>' in result
 
     def test_h2(self, converter):
         # WordPress omits the level attribute for an h2: 2 is the block's
@@ -89,7 +91,7 @@ class TestHeadings:
         result = converter.convert("## Subtitle")
         assert "<!-- wp:heading -->" in result
         assert '"level"' not in result
-        assert '<h2 class="wp-block-heading">' in result
+        assert '<h2 class="wp-block-heading" id="subtitle">' in result
 
     def test_h3(self, converter):
         result = converter.convert("### H3")
@@ -99,6 +101,45 @@ class TestHeadings:
         result = converter.convert("## **bold** heading")
         assert "wp:heading" in result
         assert "<strong>bold</strong>" in result
+
+    def test_heading_id_resolves_fragment_link(self, converter):
+        result = converter.convert(
+            "See [the fallback](#the-browser-fallback).\n\n"
+            "## The Browser Fallback\n"
+        )
+        assert '<a href="#the-browser-fallback">' in result
+        assert 'id="the-browser-fallback">The Browser Fallback</h2>' in result
+
+    def test_heading_id_drops_markup_and_punctuation(self, converter):
+        result = converter.convert(
+            '## The "Download an [Older](/x/) Version" Trick: **iOS 12.5.7**'
+        )
+        assert 'id="the-download-an-older-version-trick-ios-1257"' in result
+
+    def test_heading_id_deduplicated_within_post(self, converter):
+        result = converter.convert("## Setup\n\n### Setup\n\n## Setup\n")
+        assert 'id="setup"' in result
+        assert 'id="setup-1"' in result
+        assert 'id="setup-2"' in result
+
+    @pytest.mark.parametrize("markdown, expected", [
+        ("## Setup\n\n## Setup\n\n## Setup-1\n",
+         ["setup", "setup-1", "setup-1-1"]),
+        ("## Setup-1\n\n## Setup\n\n## Setup\n",
+         ["setup-1", "setup", "setup-2"]),
+    ])
+    def test_heading_id_avoids_a_literal_suffixed_heading(
+        self, converter, markdown, expected
+    ):
+        result = converter.convert(markdown)
+        assert re.findall(r'<h2[^>]* id="([^"]+)"', result) == expected
+
+    def test_heading_ids_reset_between_posts(self, converter):
+        converter.convert("## Setup\n")
+        assert 'id="setup"' in converter.convert("## Setup\n")
+
+    def test_heading_without_slug_text_gets_no_id(self, converter):
+        assert ' id=' not in converter.convert("## →\n")
 
 
 class TestParagraphs:
