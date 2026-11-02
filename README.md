@@ -166,7 +166,7 @@ wp-post my-file.md
 
 ### Supported Markdown
 
-- **Headings**: `# ## ###`. Each heading gets an `id` slugged from its text, GitHub style, so `[jump](#the-browser-fallback)` reaches `## The Browser Fallback`. Markup and punctuation are dropped, and a repeated heading gets `-1`, `-2` within the post.
+- **Headings**: `# ## ###`. Each heading gets an `id` slugged from its text, GitHub style, so `[jump](#the-browser-fallback)` reaches `## The Browser Fallback`. Markup and punctuation are dropped, and a repeated heading gets `-1`, `-2` within the post. A site that sets its own ids, for example from `sanitize_title()` in a plugin, sets `"heading_ids": false` in its `.wp-poster.json`, so wp-post does not replace them. `--test` follows the setting too.
 - **Text**: **bold**, *italic*, ~~strikethrough~~. Bold and italic with `*` work next to punctuation, as in `**Rates:**Before.` or `**簡潔な回答：**確認します`, although CommonMark leaves those literal. A `*` pair that still reaches the page as literal asterisks prints a warning with its line number.
 - **Lists**: ordered (1. 2. 3.) and unordered (- * +) with nesting
 - **Links**: `[text](url)`
