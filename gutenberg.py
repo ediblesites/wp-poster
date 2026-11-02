@@ -471,10 +471,12 @@ class GutenbergRenderer(mistune.HTMLRenderer):
 
     NAME = "html"
 
-    def __init__(self, image_handler=None, image_align=DEFAULT_IMAGE_ALIGN):
+    def __init__(self, image_handler=None, image_align=DEFAULT_IMAGE_ALIGN,
+                 heading_ids=True):
         super().__init__()
         self.image_handler = image_handler or (lambda url: (url, None))
         self.image_align = image_align
+        self.heading_ids = heading_ids
         self._videos = []
         self._images = []
         self.leftover_emphasis = []
@@ -538,9 +540,10 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         # editor writes, so a round trip through the editor would rewrite it.
         block_attrs = "" if level == 2 else f' {{"level":{level}}}'
         # Every heading gets an id so "#section" links in the article
-        # resolve. The block's anchor attribute is sourced from the id in
-        # the HTML, so the comment needs no "anchor" key.
-        anchor = self._heading_id(text)
+        # resolve, unless the site sets its own. The block's anchor attribute
+        # is sourced from the id in the HTML, so the comment needs no
+        # "anchor" key.
+        anchor = self._heading_id(text) if self.heading_ids else ""
         id_attr = f' id="{anchor}"' if anchor else ""
         return (
             f"<!-- wp:heading{block_attrs} -->\n"
@@ -754,7 +757,7 @@ class GutenbergConverter:
 
     def __init__(self, image_handler=None, callout_config=None,
                  bookmark_resolver=None, locale=None,
-                 image_align=DEFAULT_IMAGE_ALIGN, warn=None):
+                 image_align=DEFAULT_IMAGE_ALIGN, warn=None, heading_ids=True):
         """
         Initialize converter.
 
@@ -769,11 +772,14 @@ class GutenbergConverter:
                           callout label language. None means English.
             warn: Optional callable(message) for problems that do not stop
                           the conversion. None prints them on stderr.
+            heading_ids: False leaves headings without an id, for a site that
+                          sets its own.
         """
         _restore_star_flanking()
         self._warn = warn or _default_warn
         self._renderer = GutenbergRenderer(image_handler=image_handler,
-                                           image_align=image_align)
+                                           image_align=image_align,
+                                           heading_ids=heading_ids)
 
         self._md = mistune.Markdown(
             renderer=self._renderer,

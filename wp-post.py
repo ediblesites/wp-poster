@@ -146,7 +146,7 @@ def _request_with_retry(method, *args, **kwargs):
 class WordPressPost:
     def __init__(self, site_url, username, app_password,
                  callout_config=None, resolve_bookmarks=True, locale=None,
-                 upload_images=True):
+                 upload_images=True, heading_ids=True):
         self.site_url = site_url.rstrip('/')
         self.auth = (username, app_password)
         self.api_url = f"{self.site_url}/wp-json/wp/v2"
@@ -162,6 +162,7 @@ class WordPressPost:
         self._current_article_scope = None  # set by post_to_wordpress for the duration of a publish
         self._callout_config = callout_config
         self._locale = locale
+        self._heading_ids = heading_ids
         self._resolve_bookmarks = resolve_bookmarks
         self._upload_images = upload_images
         self._bookmark_cache = {}  # slug -> resolved dict or None
@@ -210,6 +211,7 @@ class WordPressPost:
             locale=self._locale,
             image_align=self.image_align,
             warn=lambda m: print(f"⚠ {filepath}: {m}", file=sys.stderr),
+            heading_ids=self._heading_ids,
         )
         blocks_content = converter.convert(markdown_content, line_offset=line_offset)
 
@@ -1806,6 +1808,33 @@ def find_site_for_file(project_root, network_config, filepath):
     return None, None
 
 
+def resolve_heading_ids(config, filepath):
+    """Whether wp-post writes heading ids for this file. Defaults to True.
+
+    A site that sets its own ids turns this off, because such a site usually
+    skips a heading that already has an id, and an id from here would then
+    replace the one its links were written for (issue #47).
+
+    load_config walks up from the cwd, so a run from outside the project does
+    not see the project's file. The network root is read from the article's
+    own path as well, because getting this wrong breaks links silently.
+
+    A value that is not a boolean stops the run: "false" is truthy, so
+    accepting it would write ids on a site that asked for none.
+    """
+    value = config.get('heading_ids')
+    if value is None:
+        try:
+            _, net_config = find_network_config(filepath)
+        except (OSError, ValueError):
+            net_config = None
+        value = (net_config or {}).get('heading_ids', True)
+    if not isinstance(value, bool):
+        print(f"Error: heading_ids must be true or false, not {value!r}.", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+
 def resolve_locale_for_file(filepath):
     """The declared locale of the network site a file belongs to, or None.
 
@@ -2961,14 +2990,15 @@ def main():
         # not real, and a preview must not touch the network). The locale is
         # still resolved for real, so --test previews the same callout
         # labels a publish would emit.
+        config = load_config()
         poster = WordPressPost('https://example.com', 'user', 'pass',
-                               callout_config=load_config().get('callouts'),
+                               callout_config=config.get('callouts'),
                                resolve_bookmarks=False,
                                upload_images=False,
-                               locale=resolve_locale_for_file(args.file))
+                               locale=resolve_locale_for_file(args.file),
+                               heading_ids=resolve_heading_ids(config, args.file))
 
         # Resolve format: CLI > frontmatter > config; unset is an error
-        config = load_config()
         frontmatter_peek = poster.parse_frontmatter_only(args.file)
         fmt = resolve_format_or_exit(args, frontmatter_peek, config)
 
@@ -3083,7 +3113,8 @@ def main():
         config['username'],
         config['app_password'],
         callout_config=config.get('callouts'),
-        locale=resolve_locale_for_file(args.file)
+        locale=resolve_locale_for_file(args.file),
+        heading_ids=resolve_heading_ids(config, args.file)
     )
     if config.get('id_key'):
         poster.id_key = config['id_key']

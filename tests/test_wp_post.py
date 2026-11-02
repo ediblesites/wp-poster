@@ -4703,3 +4703,72 @@ class TestConverterWarnings:
             wp.parse_markdown_file(path)
         converter_cls.call_args.kwargs["warn"]("line 3: **a:** shows as literal asterisks")
         assert capsys.readouterr().err == f"⚠ {path}: line 3: **a:** shows as literal asterisks\n"
+
+
+class TestHeadingIdsSetting:
+    resolve = staticmethod(wp_post.resolve_heading_ids)
+
+    def _project(self, tmp_path, **settings):
+        (tmp_path / "content" / "de").mkdir(parents=True)
+        (tmp_path / ".wp-poster.json").write_text(json.dumps({
+            "network": {"sites": {"de": {"content_path": "content/de"}}},
+            **settings,
+        }))
+        article = tmp_path / "content" / "de" / "a.md"
+        article.write_text("---\ntitle: T\n---\n## Setup\n")
+        return article
+
+    def test_on_by_default(self, tmp_path):
+        assert self.resolve({}, str(self._project(tmp_path))) is True
+
+    def test_loaded_config_turns_it_off(self, tmp_path):
+        article = self._project(tmp_path)
+        assert self.resolve({"heading_ids": False}, str(article)) is False
+
+    def test_network_root_applies_from_any_working_directory(self, tmp_path):
+        # load_config walks up from the cwd, so a run from elsewhere gets a
+        # different config. The article's own project must still decide.
+        article = self._project(tmp_path, heading_ids=False)
+        assert self.resolve({}, str(article)) is False
+
+    def test_loaded_config_wins_over_network_root(self, tmp_path):
+        article = self._project(tmp_path, heading_ids=False)
+        assert self.resolve({"heading_ids": True}, str(article)) is True
+
+    def test_file_outside_any_project_stays_on(self, tmp_path):
+        stray = tmp_path / "stray.md"
+        stray.write_text("## Setup\n")
+        assert self.resolve({}, str(stray)) is True
+
+    def test_malformed_network_config_stays_on(self, tmp_path):
+        (tmp_path / ".wp-poster.json").write_text("{not json")
+        stray = tmp_path / "a.md"
+        stray.write_text("## Setup\n")
+        assert self.resolve({}, str(stray)) is True
+
+    @pytest.mark.parametrize("value", ["false", 0, []])
+    def test_a_value_that_is_not_a_boolean_stops(self, tmp_path, value, capsys):
+        # "false" is truthy, so accepting it would write ids on a site that
+        # asked for none.
+        article = self._project(tmp_path)
+        with pytest.raises(SystemExit):
+            self.resolve({"heading_ids": value}, str(article))
+        assert "heading_ids" in capsys.readouterr().err
+
+    def test_setting_reaches_the_converter(self, md_file):
+        poster = wp_post.WordPressPost(
+            "https://example.com", "u", "p", heading_ids=False,
+            resolve_bookmarks=False, upload_images=False,
+        )
+        _, content = poster.parse_markdown_file(md_file({"title": "T"}, "## Setup"))
+        assert '<h2 class="wp-block-heading">Setup</h2>' in content
+
+    def test_test_mode_previews_the_setting(self, tmp_path, monkeypatch, capsys):
+        article = self._project(tmp_path, heading_ids=False, default_format="markdown")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["wp-post", str(article), "--test"])
+        with pytest.raises(SystemExit) as stopped:
+            wp_post.main()
+        assert stopped.value.code in (0, None)
+        out = capsys.readouterr().out
+        assert '<h2 class="wp-block-heading">Setup</h2>' in out

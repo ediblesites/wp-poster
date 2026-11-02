@@ -141,6 +141,16 @@ class TestHeadings:
     def test_heading_without_slug_text_gets_no_id(self, converter):
         assert ' id=' not in converter.convert("## →\n")
 
+    def test_heading_ids_off_leaves_the_id_to_the_site(self):
+        # A site that sets its own ids skips a heading that already has one,
+        # so an id from here would replace the one its links were written for.
+        result = GutenbergConverter(heading_ids=False).convert(
+            "See [setup](#setup).\n\n## Setup\n\n## Setup\n"
+        )
+        assert ' id=' not in result
+        assert result.count('<h2 class="wp-block-heading">Setup</h2>') == 2
+        assert '<a href="#setup">' in result
+
 
 class TestParagraphs:
     def test_simple_paragraph(self, converter):
