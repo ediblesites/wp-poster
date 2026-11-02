@@ -2813,7 +2813,7 @@ callouts:
   where a value like "#cf2e2e" is used as a literal and anything else is
   treated as a palette slug. See the wp-post skill for the full schema.
 
-  Labels are not configurable. They come from a built-in table in eleven
+  Labels are not configurable. They come from a built-in table in twelve
   languages, selected by the destination site's locale in network.sites -
   a post under a de_DE site gets "Warnung", not "Warning". A language with
   no entry falls back to English and warns. --test resolves the locale the

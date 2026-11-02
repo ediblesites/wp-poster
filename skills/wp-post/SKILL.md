@@ -229,11 +229,13 @@ wp-poster, selected by the destination site's `locale` in the
 | ja | 注記 | ヒント | 重要 | 警告 | 注意 | 要点 | よくある質問 | あわせて読みたい |
 | ko | 참고 | 팁 | 중요 | 경고 | 주의 | 요약 | 자주 묻는 질문 | 이어서 읽기 |
 | zh | 备注 | 提示 | 重要 | 警告 | 注意 | 摘要 | 常见问题 | 延伸阅读 |
+| zh_tw | 備註 | 提示 | 重要 | 警告 | 注意 | 摘要 | 常見問題 | 延伸閱讀 |
 | th | หมายเหตุ | เคล็ดลับ | สำคัญ | คำเตือน | ข้อควรระวัง | สรุป | คำถามที่พบบ่อย | อ่านต่อ |
 | ar | ملاحظة | نصيحة | مهم | تحذير | تنبيه | باختصار | الأسئلة الشائعة | اقرأ أيضًا |
 | he | הערה | טיפ | חשוב | אזהרה | זהירות | בקצרה | שאלות נפוצות | להמשך קריאה |
 
-A locale like `de_DE` takes its language prefix. A language with no entry
+A locale like `de_DE` takes its language prefix; `zh_TW` matches its own
+`zh_tw` row first. A language with no entry
 falls back to English and warns. A project with no `network.sites` map has
 no locale and takes English silently.
 
