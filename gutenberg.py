@@ -561,8 +561,15 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         if not slug:
             return ""
         seen = self._heading_ids.get(slug, 0)
+        anchor = slug if seen == 0 else f"{slug}-{seen}"
+        # A heading that literally reads "Setup-1" can already hold the
+        # suffixed form, so step past any id this post has given out.
+        while anchor in self._heading_ids:
+            seen += 1
+            anchor = f"{slug}-{seen}"
         self._heading_ids[slug] = seen + 1
-        return slug if seen == 0 else f"{slug}-{seen}"
+        self._heading_ids.setdefault(anchor, 1)
+        return anchor
 
     def block_code(self, code, info=None):
         from html import escape as html_escape

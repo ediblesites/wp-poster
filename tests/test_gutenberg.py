@@ -1,5 +1,7 @@
 """Tests for gutenberg.py — GutenbergConverter."""
 
+import re
+
 import mistune
 import pytest
 
@@ -119,6 +121,18 @@ class TestHeadings:
         assert 'id="setup"' in result
         assert 'id="setup-1"' in result
         assert 'id="setup-2"' in result
+
+    @pytest.mark.parametrize("markdown, expected", [
+        ("## Setup\n\n## Setup\n\n## Setup-1\n",
+         ["setup", "setup-1", "setup-1-1"]),
+        ("## Setup-1\n\n## Setup\n\n## Setup\n",
+         ["setup-1", "setup", "setup-2"]),
+    ])
+    def test_heading_id_avoids_a_literal_suffixed_heading(
+        self, converter, markdown, expected
+    ):
+        result = converter.convert(markdown)
+        assert re.findall(r'<h2[^>]* id="([^"]+)"', result) == expected
 
     def test_heading_ids_reset_between_posts(self, converter):
         converter.convert("## Setup\n")
