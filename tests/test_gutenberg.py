@@ -1007,3 +1007,52 @@ class TestLeftoverEmphasisWarning:
         warnings = []
         GutenbergConverter(warn=warnings.append).convert(md)
         assert warnings == []
+
+
+class TestRawHtmlPassesThrough:
+    """Raw HTML in the markdown reaches WordPress as markup, not as text.
+
+    mistune's HTMLRenderer escapes raw HTML by default (escape=True), which
+    turns a column-0 <figure> or <details> into literal "&lt;figure&gt;"
+    inside a <p>. GutenbergRenderer sets escape=False. These tests fail if
+    that setting is lost.
+    """
+
+    def test_renderer_does_not_escape_raw_html(self, converter):
+        assert converter._renderer._escape is False
+
+    def test_details_block_survives(self, converter):
+        md = (
+            "Intro.\n\n"
+            "<details>\n"
+            "<summary>Is the sandbox free?</summary>\n"
+            "<p>Yes.</p>\n"
+            "</details>\n\n"
+            "After."
+        )
+        result = converter.convert(md)
+        assert "<details>" in result
+        assert "<summary>Is the sandbox free?</summary>" in result
+        assert "&lt;details" not in result
+        assert "&lt;summary" not in result
+        assert "<p><details>" not in result
+
+    def test_figure_table_block_survives(self, converter):
+        md = (
+            '<figure class="wp-block-table"><table>'
+            "<tr><td>a</td></tr></table></figure>\n\n"
+            "After."
+        )
+        result = converter.convert(md)
+        assert '<figure class="wp-block-table"><table>' in result
+        assert "&lt;figure" not in result
+        assert "&lt;table" not in result
+
+    def test_inline_html_survives(self, converter):
+        result = converter.convert("Footnote marker<sup>1</sup> here.")
+        assert "<sup>1</sup>" in result
+        assert "&lt;sup" not in result
+
+    def test_text_less_than_still_escaped(self, converter):
+        result = converter.convert("Latency under <200ms globally.")
+        assert "&lt;200ms" in result

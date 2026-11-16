@@ -466,6 +466,9 @@ def embed_block(video_id, caption=""):
     )
 
 
+_BLOCK_DELIMITER = re.compile(r"<!--\s*/?wp:")
+
+
 class GutenbergRenderer(mistune.HTMLRenderer):
     """Mistune renderer that outputs WordPress Gutenberg block markup."""
 
@@ -473,7 +476,12 @@ class GutenbergRenderer(mistune.HTMLRenderer):
 
     def __init__(self, image_handler=None, image_align=DEFAULT_IMAGE_ALIGN,
                  heading_ids=True):
-        super().__init__()
+        # escape=False: a raw HTML block in the markdown (<figure>, <table>,
+        # <details> at column 0) is meant to reach WordPress as markup.
+        # mistune's default escape=True turns it into literal "&lt;figure&gt;"
+        # text inside a <p>, which a reader sees on the page. Text, code and
+        # attribute values are escaped by their own methods either way.
+        super().__init__(escape=False)
         self.image_handler = image_handler or (lambda url: (url, None))
         self.image_align = image_align
         self.heading_ids = heading_ids
@@ -481,6 +489,14 @@ class GutenbergRenderer(mistune.HTMLRenderer):
         self._images = []
         self.leftover_emphasis = []
         self._heading_ids = {}
+
+    def inline_html(self, html):
+        # A block delimiter comment in the middle of a paragraph would split
+        # the block when WordPress parses the post, so it stays text. Any
+        # other inline HTML (<sup>, <br>, <a>) passes through as markup.
+        if _BLOCK_DELIMITER.match(html):
+            return mistune.util.escape(html)
+        return html
 
     # ------------------------------------------------------------------
     # Block-level overrides
